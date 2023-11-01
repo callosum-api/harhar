@@ -1,7 +1,7 @@
 /*
 The MIT License (MIT)
 
-Copyright (c) 2014 Stridatum LLC <code@stridatum.com>
+Copyright (c) 2014 Jeremy Jay
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -26,46 +26,48 @@ package harhar
 
 import "time"
 
-// This file contains the struct definitinos for the various components of a
+// This file contains the struct definitions for the various components of a
 // HAR logfile. It omits many optional properties for brevity, and because
 // harhar is generally only useful in a server (non-browser) application mode.
 //
 // W3C Spec:
-//   https://dvcs.w3.org/hg/webperf/raw-file/tip/specs/HAR/Overview.html
+//   https://w3c.github.io/web-performance/specs/HAR/Overview.html
 
 type HAR struct {
 	Log Log `json:"log"`
 }
 
-func NewHAR() *HAR {
+// NewHAR creates a new HTTP Archive document with the provided Creator Name.
+// The recommended invocation is NewHAR(os.Args[0]).
+func NewHAR(creatorName string) *HAR {
 	v := time.Now().Format("20060102150405")
 
 	return &HAR{
 		Log: Log{
 			Version: v,
 			Creator: Creator{
+				Name:    creatorName,
 				Version: v,
 			},
 		},
 	}
-	// add some reasonable defaults
-	// r.Creator.Name = os.Args[0]
-	// r.Creator.Version = nowVersion
 }
 
 // Creator describes the source of the logged requests/responses.
 type Creator struct {
-	// Name defaults to the name of the program (os.Args[0])
+	// Name of the HTTP creator source.
 	Name string `json:"name"`
 
-	// Version defaults to the current time (formatted as "20060102150405")
+	// Version of the HTTP creator source.
 	Version string `json:"version"`
 }
 
+// Log represent a set of HTTP Request/Response Entries.
 type Log struct {
+	// Creator of this set of Log entries.
 	Creator Creator `json:"creator"`
 
-	// Version defaults to the current time (formatted as "20060102150405")
+	// Version of the log, defaults to the current time (formatted as "20060102150405")
 	Version string `json:"version"`
 
 	// Comment can be added to the log to describe the particulars of this data.
@@ -107,7 +109,6 @@ type Request struct {
 		Content  string `json:"text"`
 	} `json:"postData"`
 
-	// always -1, too lazy
 	HeadersSize int `json:"headersSize"`
 	BodySize    int `json:"bodySize"`
 }
@@ -126,7 +127,6 @@ type Response struct {
 		Content  string `json:"text"`
 	} `json:"content"`
 
-	// always -1, too lazy
 	HeadersSize int `json:"headersSize"`
 	BodySize    int `json:"bodySize"`
 }

@@ -1,7 +1,7 @@
 /*
 The MIT License (MIT)
 
-Copyright (c) 2014 Stridatum LLC <code@stridatum.com>
+Copyright (c) 2014 Jeremy Jay
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -29,7 +29,7 @@ package harhar
 import (
 	"bytes"
 	"encoding/json"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"os"
 	"time"
@@ -44,8 +44,7 @@ type Recorder struct {
 
 // NewRecorder returns a new Recorder object that fulfills the http.RoundTripper interface
 func NewRecorder() *Recorder {
-	h := NewHAR()
-	h.Log.Creator.Name = os.Args[0]
+	h := NewHAR(os.Args[0])
 
 	return &Recorder{
 		RoundTripper: http.DefaultTransport,
@@ -60,7 +59,7 @@ func (c *Recorder) WriteFile(filename string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	return len(data), ioutil.WriteFile(filename, data, 0644)
+	return len(data), os.WriteFile(filename, data, 0644)
 }
 
 func (c *Recorder) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -78,7 +77,7 @@ func (c *Recorder) RoundTrip(req *http.Request) (*http.Response, error) {
 		return resp, err
 	}
 
-	ent.Timings.Wait = int(time.Now().Sub(startTime).Seconds() * 1000.0)
+	ent.Timings.Wait = int(time.Since(startTime).Seconds() * 1000.0)
 	ent.Time = ent.Timings.Wait
 
 	// TODO: implement send and receive
@@ -139,12 +138,12 @@ func makeRequest(hr *http.Request) (Request, error) {
 	}
 
 	// read in all the data and replace the ReadCloser
-	bodyData, err := ioutil.ReadAll(hr.Body)
+	bodyData, err := io.ReadAll(hr.Body)
 	if err != nil {
 		return r, err
 	}
 	hr.Body.Close()
-	hr.Body = ioutil.NopCloser(bytes.NewReader(bodyData))
+	hr.Body = io.NopCloser(bytes.NewReader(bodyData))
 
 	r.Body.Content = string(bodyData)
 	r.Body.MIMEType = hr.Header.Get("Content-Type")
@@ -190,12 +189,12 @@ func makeResponse(hr *http.Response) (Response, error) {
 	}
 
 	// read in all the data and replace the ReadCloser
-	bodyData, err := ioutil.ReadAll(hr.Body)
+	bodyData, err := io.ReadAll(hr.Body)
 	if err != nil {
 		return r, err
 	}
 	hr.Body.Close()
-	hr.Body = ioutil.NopCloser(bytes.NewReader(bodyData))
+	hr.Body = io.NopCloser(bytes.NewReader(bodyData))
 	r.Body.Content = string(bodyData)
 	r.Body.Size = len(bodyData)
 
