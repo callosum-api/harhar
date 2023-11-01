@@ -29,117 +29,41 @@ package harhar
 import (
 	"bytes"
 	"encoding/json"
-	"io"
 	"io/ioutil"
 	"net/http"
-	"net/url"
 	"os"
-	"strings"
 	"time"
 )
 
-// Client embeds a http.Client and wraps its methods to perform transparent HAR
-// logging for every request and response. It contains the properties for the
-// root "log" node of the HAR, with Creator, Version, and Comment strings.
-type Client struct {
-	cli *http.Client
-
-	// Creator describes the source of the logged requests/responses.
-	Creator struct {
-		// Name defaults to the name of the program (os.Args[0])
-		Name string `json:"name"`
-
-		// Version defaults to the current time (formatted as "20060102150405")
-		Version string `json:"version"`
-	} `json:"creator"`
-
-	// Version defaults to the current time (formatted as "20060102150405")
-	Version string `json:"version"`
-
-	// Comment can be added to the log to describe the particulars of this data.
-	Comment string `json:"comment,omitempty"`
-
-	// Entries contains all of the Request and Response details that passed
-	// through this Client.
-	Entries []Entry `json:"entries"`
+// Client embeds an upstream RoundTripper and wraps its methods to perform transparent HAR
+// logging for every request and response
+type Recorder struct {
+	http.RoundTripper `json:"-"`
+	HAR               *HAR
 }
 
-// ClientInterface allows you to dynamically swap in a harhar.Client for
-// a http.Client if needed. (Although you'll still need to type-convert to use
-// http.Client fields or WriteLog)
-type ClientInterface interface {
-	Get(url string) (*http.Response, error)
-	Head(url string) (*http.Response, error)
-	Post(url string, bodyType string, body io.Reader) (*http.Response, error)
-	PostForm(url string, data url.Values) (*http.Response, error)
-	Do(req *http.Request) (*http.Response, error)
-}
+// NewRecorder returns a new Recorder object that fulfills the http.RoundTripper interface
+func NewRecorder() *Recorder {
+	h := NewHAR()
+	h.Log.Creator.Name = os.Args[0]
 
-func NewClient(client *http.Client) *Client {
-	nowVersion := time.Now().Format("20060102150405")
-	c := &Client{
-		cli:     client,
-		Version: nowVersion,
+	return &Recorder{
+		RoundTripper: http.DefaultTransport,
+		HAR:          h,
 	}
-	// add some reasonable defaults
-	c.Creator.Name = os.Args[0]
-	c.Creator.Version = nowVersion
-	return c
 }
 
 // WriteLog writes the HAR log format to the filename given, then returns the
 // number of bytes.
-func (c *Client) WriteLog(filename string) (int, error) {
-	data, err := json.Marshal(map[string]*Client{"log": c})
+func (c *Recorder) WriteFile(filename string) (int, error) {
+	data, err := json.Marshal(c.HAR)
 	if err != nil {
 		return 0, err
 	}
 	return len(data), ioutil.WriteFile(filename, data, 0644)
 }
 
-///////////////////////////
-// wrappers to implement same interface as http.Client
-///////////////////////////
-
-// Get works just like http.Client.Get, creating a GET Request and calling Do.
-func (c *Client) Get(url string) (*http.Response, error) {
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-	return c.Do(req)
-}
-
-// Head works just like http.Client.Head, creating a HEAD Request and calling Do.
-func (c *Client) Head(url string) (*http.Response, error) {
-	req, err := http.NewRequest("HEAD", url, nil)
-	if err != nil {
-		return nil, err
-	}
-	return c.Do(req)
-}
-
-// Post works just like http.Client.Post, creating a POST Request with the
-// provided body data, setting the content-type to bodyType, and calling Do.
-func (c *Client) Post(url string, bodyType string, body io.Reader) (*http.Response, error) {
-	req, err := http.NewRequest("POST", url, body)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", bodyType)
-	return c.Do(req)
-}
-
-// PostForm works just like http.Client.PostForm, creating a POST Request by
-// urlencoding data, setting the content-type appropriately, and calling Do.
-func (c *Client) PostForm(url string, data url.Values) (*http.Response, error) {
-	return c.Post(url, "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
-}
-
-// Do works by calling http.Client.Do on the wrapped client instance. However,
-// it also tracks the request start and end times, and parses elements from the
-// request and response data into HAR log Entries.
-func (c *Client) Do(req *http.Request) (*http.Response, error) {
+func (c *Recorder) RoundTrip(req *http.Request) (*http.Response, error) {
 	var err error
 	ent := Entry{}
 	ent.Request, err = makeRequest(req)
@@ -149,24 +73,22 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 	ent.Cache = make(map[string]string)
 
 	startTime := time.Now()
-	resp, err := c.cli.Do(req)
-	finish := time.Now()
+	resp, err := c.RoundTripper.RoundTrip(req)
 	if err != nil {
 		return resp, err
 	}
 
-	// very hard to get these numbers
+	ent.Timings.Wait = int(time.Now().Sub(startTime).Seconds() * 1000.0)
+	ent.Time = ent.Timings.Wait
+
+	// TODO: implement send and receive
 	ent.Timings.Send = -1
 	ent.Timings.Receive = -1
-
-	ent.Timings.Wait = int(finish.Sub(startTime).Seconds() * 1000.0)
-	ent.Time = ent.Timings.Wait
 
 	ent.Start = startTime.Format(time.RFC3339Nano)
 	ent.Response, err = makeResponse(resp)
 
-	// add entry to log
-	c.Entries = append(c.Entries, ent)
+	c.HAR.Log.Entries = append(c.HAR.Log.Entries, ent)
 	return resp, err
 }
 
@@ -238,7 +160,7 @@ func makeRequest(hr *http.Request) (Request, error) {
 func makeResponse(hr *http.Response) (Response, error) {
 	r := Response{
 		StatusCode:  hr.StatusCode,
-		StatusText:  hr.Status[4:], // "200 OK" => "OK"
+		StatusText:  http.StatusText(hr.StatusCode),
 		HttpVersion: hr.Proto,
 		HeadersSize: -1,
 		BodySize:    -1,
@@ -266,8 +188,6 @@ func makeResponse(hr *http.Response) (Response, error) {
 		}
 		r.Cookies = append(r.Cookies, nc)
 	}
-
-	// TODO: check for redirect URL?
 
 	// read in all the data and replace the ReadCloser
 	bodyData, err := ioutil.ReadAll(hr.Body)

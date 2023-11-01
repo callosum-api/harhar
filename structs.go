@@ -24,12 +24,57 @@ THE SOFTWARE.
 
 package harhar
 
+import "time"
+
 // This file contains the struct definitinos for the various components of a
 // HAR logfile. It omits many optional properties for brevity, and because
 // harhar is generally only useful in a server (non-browser) application mode.
 //
 // W3C Spec:
 //   https://dvcs.w3.org/hg/webperf/raw-file/tip/specs/HAR/Overview.html
+
+type HAR struct {
+	Log Log `json:"log"`
+}
+
+func NewHAR() *HAR {
+	v := time.Now().Format("20060102150405")
+
+	return &HAR{
+		Log: Log{
+			Version: v,
+			Creator: Creator{
+				Version: v,
+			},
+		},
+	}
+	// add some reasonable defaults
+	// r.Creator.Name = os.Args[0]
+	// r.Creator.Version = nowVersion
+}
+
+// Creator describes the source of the logged requests/responses.
+type Creator struct {
+	// Name defaults to the name of the program (os.Args[0])
+	Name string `json:"name"`
+
+	// Version defaults to the current time (formatted as "20060102150405")
+	Version string `json:"version"`
+}
+
+type Log struct {
+	Creator Creator `json:"creator"`
+
+	// Version defaults to the current time (formatted as "20060102150405")
+	Version string `json:"version"`
+
+	// Comment can be added to the log to describe the particulars of this data.
+	Comment string `json:"comment,omitempty"`
+
+	// Entries contains all of the Request and Response details that passed
+	// through this Client.
+	Entries []Entry `json:"entries"`
+}
 
 type Entry struct {
 	Request  Request  `json:"request"`
