@@ -69,7 +69,6 @@ func (c *Recorder) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	ent.Cache = make(map[string]string)
 
 	startTime := time.Now()
 	resp, err := c.RoundTripper.RoundTrip(req)
@@ -96,7 +95,7 @@ func makeRequest(hr *http.Request) (Request, error) {
 	r := Request{
 		Method:      hr.Method,
 		URL:         hr.URL.String(),
-		HttpVersion: hr.Proto,
+		HTTPVersion: hr.Proto,
 		HeadersSize: -1,
 		BodySize:    -1,
 	}
@@ -105,7 +104,7 @@ func makeRequest(hr *http.Request) (Request, error) {
 	r.Headers = make([]NameValuePair, 0, len(hr.Header))
 	for name, vals := range hr.Header {
 		for _, val := range vals {
-			r.Headers = append(r.Headers, NameValuePair{name, val})
+			r.Headers = append(r.Headers, NameValuePair{Name: name, Value: val})
 		}
 	}
 
@@ -118,7 +117,7 @@ func makeRequest(hr *http.Request) (Request, error) {
 			Value:    c.Value,
 			Domain:   c.Domain,
 			Expires:  c.Expires.Format(time.RFC3339Nano),
-			HttpOnly: c.HttpOnly,
+			HTTPOnly: c.HttpOnly,
 			Secure:   c.Secure,
 		}
 		r.Cookies = append(r.Cookies, nc)
@@ -129,7 +128,7 @@ func makeRequest(hr *http.Request) (Request, error) {
 	r.QueryParams = make([]NameValuePair, 0, len(qp))
 	for name, vals := range qp {
 		for _, val := range vals {
-			r.QueryParams = append(r.QueryParams, NameValuePair{name, val})
+			r.QueryParams = append(r.QueryParams, NameValuePair{Name: name, Value: val})
 		}
 	}
 
@@ -160,7 +159,7 @@ func makeResponse(hr *http.Response) (Response, error) {
 	r := Response{
 		StatusCode:  hr.StatusCode,
 		StatusText:  http.StatusText(hr.StatusCode),
-		HttpVersion: hr.Proto,
+		HTTPVersion: hr.Proto,
 		HeadersSize: -1,
 		BodySize:    -1,
 	}
@@ -169,7 +168,7 @@ func makeResponse(hr *http.Response) (Response, error) {
 	r.Headers = make([]NameValuePair, 0, len(hr.Header))
 	for name, vals := range hr.Header {
 		for _, val := range vals {
-			r.Headers = append(r.Headers, NameValuePair{name, val})
+			r.Headers = append(r.Headers, NameValuePair{Name: name, Value: val})
 		}
 	}
 
@@ -182,7 +181,7 @@ func makeResponse(hr *http.Response) (Response, error) {
 			Value:    c.Value,
 			Domain:   c.Domain,
 			Expires:  c.Expires.Format(time.RFC3339Nano),
-			HttpOnly: c.HttpOnly,
+			HTTPOnly: c.HttpOnly,
 			Secure:   c.Secure,
 		}
 		r.Cookies = append(r.Cookies, nc)
