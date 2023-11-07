@@ -1,10 +1,8 @@
 // Command harhar will do GET requests on provided URLs and log the results to a HAR file.
 // This is a simple example that concisely showcases all the features and usage.
 //
-// USAGE: ./harhar [-o results.har] <URL> [<URL>...]
-//
-// ex: ./harhar https://google.com https://yahoo.com https://bing.com
-//
+//		 USAGE: ./harhar [-o results.har] <URL> [<URL>...]
+//	   ex: ./harhar https://google.com https://yahoo.com https://bing.com
 package main
 
 import (
@@ -32,7 +30,6 @@ func main() {
 		}
 		log.Printf("got %s from %s\n", resp.Status, u)
 	}
-
 
 	size, err := recorder.WriteFile(*output)
 	if err != nil {

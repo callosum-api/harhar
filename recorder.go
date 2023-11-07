@@ -1,27 +1,3 @@
-/*
-The MIT License (MIT)
-
-Copyright (c) 2014 Jeremy Jay
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-*/
-
 // Package harhar provides a minimal set of methods and structs to enable
 // HAR logging in a go net/http-based application.
 package harhar
@@ -46,6 +22,7 @@ type Recorder struct {
 func NewRecorder() *Recorder {
 	h := NewHAR(os.Args[0])
 
+	// TODO: get more detailed timings using a wrapped Transport
 	return &Recorder{
 		RoundTripper: http.DefaultTransport,
 		HAR:          h,
@@ -62,6 +39,7 @@ func (c *Recorder) WriteFile(filename string) (int, error) {
 	return len(data), os.WriteFile(filename, data, 0644)
 }
 
+// RoundTrip implements http.RoundTripper
 func (c *Recorder) RoundTrip(req *http.Request) (*http.Response, error) {
 	var err error
 	ent := Entry{}
@@ -76,7 +54,7 @@ func (c *Recorder) RoundTrip(req *http.Request) (*http.Response, error) {
 		return resp, err
 	}
 
-	ent.Timings.Wait = int(time.Since(startTime).Seconds() * 1000.0)
+	ent.Timings.Wait = int(time.Since(startTime).Milliseconds())
 	ent.Time = ent.Timings.Wait
 
 	// TODO: implement send and receive
@@ -99,6 +77,11 @@ func makeRequest(hr *http.Request) (Request, error) {
 		HeadersSize: -1,
 		BodySize:    -1,
 	}
+
+	h2 := hr.Header.Clone()
+	buf := &bytes.Buffer{}
+	h2.Write(buf)
+	r.HeadersSize = buf.Len() + 4 // incl. CRLF CRLF
 
 	// parse out headers
 	r.Headers = make([]NameValuePair, 0, len(hr.Header))
@@ -133,6 +116,7 @@ func makeRequest(hr *http.Request) (Request, error) {
 	}
 
 	if hr.Body == nil {
+		r.BodySize = 0
 		return r, nil
 	}
 
@@ -142,13 +126,62 @@ func makeRequest(hr *http.Request) (Request, error) {
 		return r, err
 	}
 	hr.Body.Close()
-	hr.Body = io.NopCloser(bytes.NewReader(bodyData))
+	bodbuf := bytes.NewReader(bodyData)
+	hr.Body = io.NopCloser(bodbuf)
 
-	r.Body.Content = string(bodyData)
+	r.BodySize = len(bodyData)
 	r.Body.MIMEType = hr.Header.Get("Content-Type")
 	if r.Body.MIMEType == "" {
 		// default per RFC2616
 		r.Body.MIMEType = "application/octet-stream"
+	}
+	switch r.Body.MIMEType {
+	case "form-data", "multipart/form-data":
+		hr.ParseMultipartForm(32 << 20) // 32 MB
+		bodbuf.Seek(0, io.SeekStart)
+		for key, fheads := range hr.MultipartForm.File {
+			for _, fh := range fheads {
+				fhandle, err := fh.Open()
+				if err != nil {
+					return r, err
+				}
+				fileContents, err := io.ReadAll(fhandle)
+				fhandle.Close()
+				if err != nil {
+					return r, err
+				}
+
+				r.Body.Params = append(r.Body.Params, PostNameValuePair{
+					Name:        key,
+					Value:       string(fileContents),
+					FileName:    fh.Filename,
+					ContentType: fh.Header.Get("Content-Type"),
+				})
+			}
+		}
+		for key, vals := range hr.MultipartForm.Value {
+			for _, val := range vals {
+				r.Body.Params = append(r.Body.Params, PostNameValuePair{
+					Name:  key,
+					Value: val,
+				})
+			}
+		}
+
+	case "application/x-www-form-urlencoded":
+		hr.ParseForm()
+		bodbuf.Seek(0, io.SeekStart)
+		for key, vals := range hr.PostForm {
+			for _, val := range vals {
+				r.Body.Params = append(r.Body.Params, PostNameValuePair{
+					Name:  key,
+					Value: val,
+				})
+			}
+		}
+
+	default:
+		r.Body.Content = string(bodyData)
 	}
 
 	return r, nil
@@ -164,12 +197,21 @@ func makeResponse(hr *http.Response) (Response, error) {
 		BodySize:    -1,
 	}
 
+	h2 := hr.Header.Clone()
+	buf := &bytes.Buffer{}
+	h2.Write(buf)
+	r.HeadersSize = buf.Len() + 4 // incl. CRLF CRLF
+
 	// parse out headers
 	r.Headers = make([]NameValuePair, 0, len(hr.Header))
 	for name, vals := range hr.Header {
 		for _, val := range vals {
 			r.Headers = append(r.Headers, NameValuePair{Name: name, Value: val})
 		}
+	}
+	rurl, err := hr.Location()
+	if err == nil {
+		r.RedirectURL = rurl.String()
 	}
 
 	// parse out cookies
@@ -187,6 +229,13 @@ func makeResponse(hr *http.Response) (Response, error) {
 		r.Cookies = append(r.Cookies, nc)
 	}
 
+	// FIXME: net/http transparently decompresses content,
+	// so r.Body.Size and r.Body.Compression are not true to the server's response
+	// also, if the response is not utf-8, then r.Body.Content and r.Body.Encoding
+	// are not properly handled (spec says to decode anything into UTF-8)
+	//
+	// see hr.Uncompressed for next steps
+
 	// read in all the data and replace the ReadCloser
 	bodyData, err := io.ReadAll(hr.Body)
 	if err != nil {
@@ -195,7 +244,9 @@ func makeResponse(hr *http.Response) (Response, error) {
 	hr.Body.Close()
 	hr.Body = io.NopCloser(bytes.NewReader(bodyData))
 	r.Body.Content = string(bodyData)
+	r.Body.Compression = 0
 	r.Body.Size = len(bodyData)
+	r.BodySize = r.Body.Size
 
 	r.Body.MIMEType = hr.Header.Get("Content-Type")
 	if r.Body.MIMEType == "" {

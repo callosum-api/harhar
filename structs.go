@@ -1,38 +1,10 @@
-/*
-The MIT License (MIT)
-
-Copyright (c) 2014 Jeremy Jay
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-*/
-
 package harhar
 
 import "time"
 
-// This file contains the struct definitions for the various components of a
-// HAR logfile. It omits many optional properties for brevity, and because
-// harhar is generally only useful in a server (non-browser) application mode.
+// HAR represents the root of an HTTP Archive document.
 //
-// W3C Spec:
-//   https://w3c.github.io/web-performance/specs/HAR/Overview.html
-
+// W3C Spec: https://w3c.github.io/web-performance/specs/HAR/Overview.html
 type HAR struct {
 	Log Log `json:"log"`
 }
@@ -65,7 +37,7 @@ type Creator struct {
 	Comment string `json:"comment,omitempty"`
 }
 
-// Log represent a set of HTTP Request/Response Entries.
+// Log represents a set of HTTP Request/Response Entries.
 type Log struct {
 	// Version of the log, defaults to the current time (formatted as "20060102150405")
 	Version string `json:"version"`
@@ -254,7 +226,7 @@ type Response struct {
 
 	// Body describes the response body content.
 	Body struct {
-		// Size of response content in bytes.
+		// Size of response content in bytes (decompressed).
 		Size int `json:"size"`
 		// Compression is the number of bytes saved by compression
 		Compression int `json:"compression,omitempty"`
@@ -273,7 +245,7 @@ type Response struct {
 	// NB only includes the size of headers sent by the server, not those added by a browser.
 	HeadersSize int `json:"headersSize"`
 
-	// BodySize of the response body in bytes
+	// BodySize of the response body in bytes (as sent)
 	BodySize int `json:"bodySize"`
 
 	// Comment can be added by the user
