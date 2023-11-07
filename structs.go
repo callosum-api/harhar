@@ -294,7 +294,7 @@ type NameValuePair struct {
 // CacheInfo describes cache properties of known content
 type CacheInfo struct {
 	// Expiration time of the cached content (ISO 8601)
-	Expires string `json:"expires,optional"`
+	Expires string `json:"expires,omitempty"`
 
 	// LastAccess time of the cached content (ISO 8601)
 	LastAccess string `json:"lastAccess"`
