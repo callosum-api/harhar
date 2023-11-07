@@ -4,9 +4,11 @@ package harhar
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"os"
 	"time"
 )
@@ -22,7 +24,6 @@ type Recorder struct {
 func NewRecorder() *Recorder {
 	h := NewHAR(os.Args[0])
 
-	// TODO: get more detailed timings using a wrapped Transport
 	return &Recorder{
 		RoundTripper: http.DefaultTransport,
 		HAR:          h,
@@ -48,21 +49,59 @@ func (c *Recorder) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 
+	var dnsStart, tlsStart, connWaitStart, connStart, sendStart, waitStart, respStart time.Time
+	trace := &httptrace.ClientTrace{
+		GetConn: func(hostPort string) {
+			connWaitStart = time.Now()
+		},
+		GotConn: func(connInfo httptrace.GotConnInfo) {
+			ent.Timings.Blocked = int(time.Since(connWaitStart).Milliseconds())
+		},
+
+		DNSStart: func(dnsInfo httptrace.DNSStartInfo) {
+			dnsStart = time.Now()
+		},
+		DNSDone: func(dnsInfo httptrace.DNSDoneInfo) {
+			ent.Timings.DNS = int(time.Since(dnsStart).Milliseconds())
+			ent.ServerIP = dnsInfo.Addrs[0].String()
+		},
+
+		ConnectStart: func(network, addr string) {
+			connStart = time.Now()
+		},
+		ConnectDone: func(network, addr string, err error) {
+			ent.Timings.Connect = int(time.Since(connStart).Milliseconds())
+			sendStart = time.Now()
+		},
+
+		TLSHandshakeStart: func() {
+			tlsStart = time.Now()
+		},
+		TLSHandshakeDone: func(connState tls.ConnectionState, err error) {
+			ent.Timings.SSL = int(time.Since(tlsStart).Milliseconds())
+		},
+
+		WroteRequest: func(info httptrace.WroteRequestInfo) {
+			ent.Timings.Send = int(time.Since(sendStart).Milliseconds())
+			waitStart = time.Now()
+		},
+		GotFirstResponseByte: func() {
+			ent.Timings.Wait = int(time.Since(waitStart).Milliseconds())
+			respStart = time.Now()
+		},
+	}
+	req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
+
 	startTime := time.Now()
 	resp, err := c.RoundTripper.RoundTrip(req)
 	if err != nil {
 		return resp, err
 	}
 
-	ent.Timings.Wait = int(time.Since(startTime).Milliseconds())
-	ent.Time = ent.Timings.Wait
-
-	// TODO: implement send and receive
-	ent.Timings.Send = -1
-	ent.Timings.Receive = -1
-
-	ent.Start = startTime.Format(time.RFC3339Nano)
 	ent.Response, err = makeResponse(resp)
+	ent.Timings.Receive = int(time.Since(respStart).Milliseconds())
+	ent.Time = int(time.Since(startTime).Milliseconds())
+	ent.Start = startTime.Format(time.RFC3339Nano)
 
 	c.HAR.Log.Entries = append(c.HAR.Log.Entries, ent)
 	return resp, err
