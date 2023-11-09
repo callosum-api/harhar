@@ -10,14 +10,18 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"os"
+	"sync"
 	"time"
 )
 
 // Client embeds an upstream RoundTripper and wraps its methods to perform transparent HAR
 // logging for every request and response
 type Recorder struct {
-	http.RoundTripper `json:"-"`
-	HAR               *HAR
+	mu           sync.Mutex
+	RoundTripper http.RoundTripper `json:"-"`
+	Handler      http.Handler      `json:"-"`
+
+	HAR *HAR
 }
 
 // NewRecorder returns a new Recorder object that fulfills the http.RoundTripper interface
@@ -26,6 +30,7 @@ func NewRecorder() *Recorder {
 
 	return &Recorder{
 		RoundTripper: http.DefaultTransport,
+		Handler:      http.DefaultServeMux,
 		HAR:          h,
 	}
 }
@@ -42,6 +47,10 @@ func (c *Recorder) WriteFile(filename string) (int, error) {
 
 // RoundTrip implements http.RoundTripper
 func (c *Recorder) RoundTrip(req *http.Request) (*http.Response, error) {
+	// http.RoundTripper must be safe for concurrent use
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	var err error
 	ent := Entry{}
 	ent.Request, err = makeRequest(req)
@@ -49,7 +58,17 @@ func (c *Recorder) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 
-	var dnsStart, tlsStart, connWaitStart, connStart, sendStart, waitStart, respStart time.Time
+	// if we re-use a connection many trace hooks don't fire, so
+	// set a start time for everything
+	now := time.Now()
+	dnsStart := now
+	tlsStart := now
+	connWaitStart := now
+	connStart := now
+	sendStart := now
+	waitStart := now
+	respStart := now
+
 	trace := &httptrace.ClientTrace{
 		GetConn: func(hostPort string) {
 			connWaitStart = time.Now()
