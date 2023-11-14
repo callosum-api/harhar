@@ -71,16 +71,19 @@ type Page struct {
 	Title string `json:"title"`
 
 	// PageTimings contains detailing timing info about the page load
-	PageTimings struct {
-		// OnContentLoad is milliseconds since Start for page content to be loaded.
-		OnContentLoad int `json:"onContentLoad,omitempty"`
+	PageTimings PageTiming `json:"pageTimings"`
 
-		// OnLoad is milliseconds since Start for OnLoad event to be fired.
-		OnLoad int `json:"onLoad,omitempty"`
+	// Comment can be added by the user
+	Comment string `json:"comment,omitempty"`
+}
 
-		// Comment can be added by the user
-		Comment string `json:"comment,omitempty"`
-	} `json:"pageTimings"`
+// PageTiming contains DOM-related page timing information.
+type PageTiming struct {
+	// OnContentLoad is milliseconds since Start for page content to be loaded.
+	OnContentLoad int `json:"onContentLoad,omitempty"`
+
+	// OnLoad is milliseconds since Start for OnLoad event to be fired.
+	OnLoad int `json:"onLoad,omitempty"`
 
 	// Comment can be added by the user
 	Comment string `json:"comment,omitempty"`
@@ -104,43 +107,52 @@ type Entry struct {
 	Response Response `json:"response"`
 
 	// Cache contains info about how the request was/is now cached.
-	Cache struct {
-		Before *CacheInfo `json:"beforeRequest,omitempty"`
-		After  *CacheInfo `json:"afterRequest,omitempty"`
-
-		// Comment can be added by the user
-		Comment string `json:"comment,omitempty"`
-	} `json:"cache"`
+	Cache CacheState `json:"cache"`
 
 	// Timings contains detail info about the request/response round trip.
-	Timings struct {
-		// Send is the Time required to send this request to the server.
-		Send int `json:"send"`
-		// Wait is the Time spent waiting on a response from the server.
-		Wait int `json:"wait"`
-		// Receive is the Time spent reading the entire response from the server.
-		Receive int `json:"receive"`
-
-		// Blocked is the Time spent in a queue waiting for a network connection
-		Blocked int `json:"blocked,omitempty"`
-		// DNS is the domain name resolution time - The time required to resolve a host name
-		DNS int `json:"dns,omitempty"`
-		// Connect is the Time required to create TCP connection.
-		Connect int `json:"connect,omitempty"`
-
-		// SSL is the Time required to negotiate the SSL/TLS connection.
-		// Note: if defined this time is included in Connect.
-		SSL int `json:"ssl,omitempty"`
-
-		// Comment can be added by the user
-		Comment string `json:"comment,omitempty"`
-	} `json:"timings"`
+	Timings Timings `json:"timings"`
 
 	// ServerIP contains the connected server address.
 	ServerIP string `json:"serverIPAddress,omitempty"`
 
 	// Connection contains the connection info (e.g. a TCP/IP Port/ID)
 	Connection string `json:"connection,omitempty"`
+
+	// Comment can be added by the user
+	Comment string `json:"comment,omitempty"`
+}
+
+// CacheState represents the cache status before and after a request.
+type CacheState struct {
+	// Before contains the cache status before the request
+	Before *CacheInfo `json:"beforeRequest,omitempty"`
+
+	// After contains the cache status after the request
+	After *CacheInfo `json:"afterRequest,omitempty"`
+
+	// Comment can be added by the user
+	Comment string `json:"comment,omitempty"`
+}
+
+// Timings contains various timings for network latency.
+type Timings struct {
+	// Send is the Time required to send this request to the server.
+	Send int `json:"send"`
+	// Wait is the Time spent waiting on a response from the server.
+	Wait int `json:"wait"`
+	// Receive is the Time spent reading the entire response from the server.
+	Receive int `json:"receive"`
+
+	// Blocked is the Time spent in a queue waiting for a network connection
+	Blocked int `json:"blocked,omitempty"`
+	// DNS is the domain name resolution time - The time required to resolve a host name
+	DNS int `json:"dns,omitempty"`
+	// Connect is the Time required to create TCP connection.
+	Connect int `json:"connect,omitempty"`
+
+	// SSL is the Time required to negotiate the SSL/TLS connection.
+	// Note: if defined this time is included in Connect.
+	SSL int `json:"ssl,omitempty"`
 
 	// Comment can be added by the user
 	Comment string `json:"comment,omitempty"`
@@ -167,14 +179,7 @@ type Request struct {
 	QueryParams []NameValuePair `json:"queryString"`
 
 	// Body of the request (e.g. from a POST)
-	Body struct {
-		// MIMEType of the body content
-		MIMEType string `json:"mimeType"`
-		// List of (parsed URL-encoded) parameters, exclusive with Content
-		Params []PostNameValuePair `json:"params,omitempty"`
-		// Content of the post as plain text (exclusive with Params)
-		Content string `json:"text,omitempty"`
-	} `json:"postData,omitempty"`
+	Body BodyType `json:"postData,omitempty"`
 
 	// HeadersSize of the request header in bytes.
 	// NB counted from start of request to end of double CRLF before body.
@@ -185,6 +190,16 @@ type Request struct {
 
 	// Comment can be added by the user
 	Comment string `json:"comment,omitempty"`
+}
+
+// BodyType contains information about the Body of a request
+type BodyType struct {
+	// MIMEType of the body content
+	MIMEType string `json:"mimeType"`
+	// List of (parsed URL-encoded) parameters, exclusive with Content
+	Params []PostNameValuePair `json:"params,omitempty"`
+	// Content of the post as plain text (exclusive with Params)
+	Content string `json:"text,omitempty"`
 }
 
 // PostNameValuePair contains the description and content of a POSTed name and value pair.
@@ -225,20 +240,7 @@ type Response struct {
 	Headers []NameValuePair `json:"headers"`
 
 	// Body describes the response body content.
-	Body struct {
-		// Size of response content in bytes (decompressed).
-		Size int `json:"size"`
-		// Compression is the number of bytes saved by compression
-		Compression int `json:"compression,omitempty"`
-		// MIMEType of the body content
-		MIMEType string `json:"mimeType"`
-		// Content is the text content of the response body.
-		Content string `json:"text,omitempty"`
-		// Encoding used by the response.
-		Encoding string `json:"encoding,omitempty"`
-		// Comment can be added by the user
-		Comment string `json:"comment,omitempty"`
-	} `json:"content"`
+	Body BodyResponseType `json:"content"`
 
 	// HeadersSize of the request header in bytes.
 	// NB counted from start of request to end of double CRLF before body.
@@ -248,6 +250,22 @@ type Response struct {
 	// BodySize of the response body in bytes (as sent)
 	BodySize int `json:"bodySize"`
 
+	// Comment can be added by the user
+	Comment string `json:"comment,omitempty"`
+}
+
+// BodyResponseType contains various information about the response body.
+type BodyResponseType struct {
+	// Size of response content in bytes (decompressed).
+	Size int `json:"size"`
+	// Compression is the number of bytes saved by compression
+	Compression int `json:"compression,omitempty"`
+	// MIMEType of the body content
+	MIMEType string `json:"mimeType"`
+	// Content is the text content of the response body.
+	Content string `json:"text,omitempty"`
+	// Encoding used by the response.
+	Encoding string `json:"encoding,omitempty"`
 	// Comment can be added by the user
 	Comment string `json:"comment,omitempty"`
 }
