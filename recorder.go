@@ -195,7 +195,10 @@ func makeRequest(hr *http.Request) (Request, error) {
 	}
 	switch r.Body.MIMEType {
 	case "form-data", "multipart/form-data":
-		hr.ParseMultipartForm(32 << 20) // 32 MB
+		err = hr.ParseMultipartForm(32 << 20) // 32 MB
+		if err != nil {
+			return r, err
+		}
 		bodbuf.Seek(0, io.SeekStart)
 		for key, fheads := range hr.MultipartForm.File {
 			for _, fh := range fheads {
@@ -227,7 +230,10 @@ func makeRequest(hr *http.Request) (Request, error) {
 		}
 
 	case "application/x-www-form-urlencoded":
-		hr.ParseForm()
+		err = hr.ParseForm()
+		if err != nil {
+			return r, err
+		}
 		bodbuf.Seek(0, io.SeekStart)
 		for key, vals := range hr.PostForm {
 			for _, val := range vals {
