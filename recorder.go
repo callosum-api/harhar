@@ -82,7 +82,11 @@ func (c *Recorder) RoundTrip(req *http.Request) (*http.Response, error) {
 		},
 		DNSDone: func(dnsInfo httptrace.DNSDoneInfo) {
 			ent.Timings.DNS = int(time.Since(dnsStart).Milliseconds())
-			ent.ServerIP = dnsInfo.Addrs[0].String()
+			if len(dnsInfo.Addrs) > 0 {
+				ent.ServerIP = dnsInfo.Addrs[0].String()
+			} else {
+				ent.ServerIP = "0.0.0.0"
+			}
 		},
 
 		ConnectStart: func(network, addr string) {
