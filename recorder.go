@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptrace"
 	"os"
@@ -21,6 +22,8 @@ type Recorder struct {
 	RoundTripper http.RoundTripper `json:"-"`
 	Handler      http.Handler      `json:"-"`
 
+	DisableHTTP2 func(bool)
+
 	HAR *HAR
 }
 
@@ -28,10 +31,38 @@ type Recorder struct {
 func NewRecorder() *Recorder {
 	h := NewHAR(os.Args[0])
 
+	// copy of DefaultTransport but with the
+	// ability to disable HTTP/2 as needed
+	tport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+
+		// if nil, then HTTP/2 is enabled
+		// if non-nil, then HTTP/2 is disabled
+		//TLSNextProto: make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
+	}
+
 	return &Recorder{
-		RoundTripper: http.DefaultTransport,
+		RoundTripper: tport,
 		Handler:      http.DefaultServeMux,
 		HAR:          h,
+		DisableHTTP2: func(disable2 bool) {
+			if disable2 {
+				if tport.TLSNextProto == nil {
+					tport.TLSNextProto = make(map[string]func(authority string, c *tls.Conn) http.RoundTripper)
+				}
+			} else {
+				tport.TLSNextProto = nil
+			}
+		},
 	}
 }
 
