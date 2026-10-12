@@ -7,6 +7,7 @@ package main
 
 import (
 	"flag"
+	"io"
 	"log"
 	"net/http"
 
@@ -21,13 +22,14 @@ func main() {
 	flag.Parse()
 
 	recorder := harhar.NewRecorder()
-	client := &http.Client{Transport: recorder}
+	client := &http.Client{Transport: recorder.Transport(nil)}
 
 	for _, u := range flag.Args() {
 		resp, err := client.Get(u)
 		if err != nil {
 			log.Fatal(err)
 		}
+		io.Copy(io.Discard, resp.Body) // entries are recorded once the body is read
 		resp.Body.Close()
 		log.Printf("got %s from %s\n", resp.Status, u)
 	}

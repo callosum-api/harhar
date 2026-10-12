@@ -33,8 +33,8 @@ func TestRoundTripConcurrent(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > n*delay/2 {
 		t.Errorf("%d parallel requests took %v; they appear to be serialized", n, elapsed)
 	}
-	if len(rec.HAR.Log.Entries) != n {
-		t.Errorf("got %d entries, want %d", len(rec.HAR.Log.Entries), n)
+	if len(rec.HAR().Log.Entries) != n {
+		t.Errorf("got %d entries, want %d", len(rec.HAR().Log.Entries), n)
 	}
 }
 
@@ -87,8 +87,8 @@ func TestWriteFilePermissions(t *testing.T) {
 	}
 }
 
-// A Recorder used as both the server handler and the client transport (a
-// recording proxy) used to deadlock on its own lock.
+// A Recorder used for both the middleware and the transport of a proxy
+// used to deadlock on its own lock.
 func TestRecorderAsProxyNoDeadlock(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, "upstream")
@@ -96,8 +96,8 @@ func TestRecorderAsProxyNoDeadlock(t *testing.T) {
 	defer upstream.Close()
 
 	rec := NewRecorder()
-	cli := &http.Client{Transport: rec}
-	rec.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	cli := &http.Client{Transport: rec.Transport(nil)}
+	proxy := httptest.NewServer(rec.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp, err := cli.Get(upstream.URL)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
@@ -105,8 +105,7 @@ func TestRecorderAsProxyNoDeadlock(t *testing.T) {
 		}
 		defer resp.Body.Close()
 		io.Copy(w, resp.Body)
-	})
-	proxy := httptest.NewServer(rec)
+	})))
 	defer proxy.Close()
 
 	done := make(chan []byte)
@@ -122,8 +121,8 @@ func TestRecorderAsProxyNoDeadlock(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("deadlocked")
 	}
-	if len(rec.HAR.Log.Entries) != 2 {
-		t.Errorf("got %d entries, want 2", len(rec.HAR.Log.Entries))
+	if n := len(rec.HAR().Log.Entries); n != 2 {
+		t.Errorf("got %d entries, want 2", n)
 	}
 }
 
