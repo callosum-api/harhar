@@ -167,3 +167,19 @@ post-process HAR files:
   `content.encoding` set to `"base64"`.
 - Requests that fail without a response are recorded with status `0` and the
   error in `response.comment`.
+
+Commands
+--------
+
+`harprox`:
+
+- Listens on `127.0.0.1:6060` by default instead of all interfaces. Pass
+  `-i :6060` for the old behavior (it logs a warning).
+- Passes redirects back to the client instead of following them, since it is
+  now built on `httputil.ReverseProxy`.
+- `-n` takes a duration such as `30s`. A bare number still means seconds.
+- Headers from `-h` are redacted in the HAR file.
+- Saves the HAR file once more on exit.
+
+`harhar` keeps going after a failed URL, records the failure, and exits
+with status 1 at the end, instead of stopping at the first failure.

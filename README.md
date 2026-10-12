@@ -56,8 +56,25 @@ rec := harhar.NewRecorder(
 Commands
 --------
 
-- `cmd/harhar` fetches URLs and saves the results: `harhar -o out.har https://example.com`
-- `cmd/harprox` is a recording reverse proxy: `harprox -p https://api.example.com -o out.har`
+`harhar` fetches URLs and saves the results:
+
+```bash
+go run github.com/callosum-api/harhar/cmd/harhar@latest -o out.har https://example.com
+```
+
+`harprox` is a reverse proxy that records everything passing through it.
+Requests to `http://127.0.0.1:6060/<path>` are forwarded to the `-p` URL
+plus `<path>`:
+
+```bash
+go run github.com/callosum-api/harhar/cmd/harprox@latest -p https://api.example.com -o out.har
+```
+
+It saves the file every 5 seconds while there's new traffic (`-n`) and
+again on Ctrl-C. `-h headers.txt` adds `Name: value` headers to every
+proxied request, such as an API token; those headers are redacted in the
+HAR file. It listens only on localhost unless you pass `-i`. Run either
+command with `-help` for all flags.
 
 Security
 --------
