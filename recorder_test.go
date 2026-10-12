@@ -19,16 +19,19 @@ func newTestClient(t *testing.T, h http.HandlerFunc) (*httptest.Server, *http.Cl
 	return srv, &http.Client{Transport: rec}, rec
 }
 
+// mustDo performs req and returns the response body. It reports failures
+// with t.Error so it is safe to call from other goroutines.
 func mustDo(t *testing.T, cli *http.Client, req *http.Request) []byte {
 	t.Helper()
 	resp, err := cli.Do(req)
 	if err != nil {
-		t.Fatal(err)
+		t.Error(err)
+		return nil
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		t.Fatal(err)
+		t.Error(err)
 	}
 	return body
 }

@@ -10,9 +10,6 @@ import (
 
 // ServeHTTP implements http.Handler (aka a Server-side recorder)
 func (c *Recorder) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	var err error
 	ent := Entry{}
 	ent.Request, err = makeRequest(req)
@@ -43,7 +40,7 @@ func (c *Recorder) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		log.Println("unable to record HAR for response ", req.URL.String())
 	}
-	c.HAR.Log.Entries = append(c.HAR.Log.Entries, ent)
+	c.addEntry(ent)
 }
 
 type HARResponseWriter struct {

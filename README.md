@@ -34,6 +34,9 @@ Then, whenever you're ready to generate the HAR output, call WriteFile:
 recorder.WriteFile("output.har")
 ```
 
+`WriteFile` is safe to call while requests are in flight. Other access to
+`recorder.HAR` is not synchronized with recording.
+
 Commands
 --------
 
@@ -45,7 +48,8 @@ Security
 
 HAR files contain everything that was sent and received, including
 `Authorization` headers, cookies, and request and response bodies. Treat
-them like credentials.
+them like credentials. `WriteFile` creates files readable only by the
+current user.
 
 Request and response bodies are held in memory in full, and every entry is
 kept until the program exits. Don't leave a recorder attached to
