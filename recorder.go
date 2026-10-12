@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -67,21 +68,53 @@ func NewRecorder() *Recorder {
 }
 
 // WriteFile writes the HAR log format to the filename given, then returns the
-// number of bytes.
+// number of bytes. It is safe to call while requests are being recorded.
+//
+// The file is replaced atomically and is readable only by the current user,
+// since HAR data usually contains credentials.
 func (c *Recorder) WriteFile(filename string) (int, error) {
-	data, err := json.Marshal(c.HAR)
+	// Entries are only ever appended, so a shallow copy is a stable snapshot.
+	c.mu.Lock()
+	h := *c.HAR
+	c.mu.Unlock()
+
+	data, err := json.Marshal(&h)
 	if err != nil {
 		return 0, err
 	}
-	return len(data), os.WriteFile(filename, data, 0644)
+	if err := writeFileAtomic(filename, data); err != nil {
+		return 0, err
+	}
+	return len(data), nil
+}
+
+// writeFileAtomic writes data to a 0600 temp file next to filename, then
+// renames it into place so readers never see a partial file.
+func writeFileAtomic(filename string, data []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(filename), "."+filepath.Base(filename)+".*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name()) // no-op once renamed
+
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), filename)
+}
+
+func (c *Recorder) addEntry(ent Entry) {
+	c.mu.Lock()
+	c.HAR.Log.Entries = append(c.HAR.Log.Entries, ent)
+	c.mu.Unlock()
 }
 
 // RoundTrip implements http.RoundTripper
 func (c *Recorder) RoundTrip(req *http.Request) (*http.Response, error) {
-	// http.RoundTripper must be safe for concurrent use
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	var err error
 	ent := Entry{}
 	ent.Request, err = makeRequest(req)
@@ -89,62 +122,8 @@ func (c *Recorder) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 
-	// if we re-use a connection many trace hooks don't fire, so
-	// set a start time for everything
-	now := time.Now()
-	dnsStart := now
-	tlsStart := now
-	connWaitStart := now
-	connStart := now
-	sendStart := now
-	waitStart := now
-	respStart := now
-
-	trace := &httptrace.ClientTrace{
-		GetConn: func(hostPort string) {
-			connWaitStart = time.Now()
-		},
-		GotConn: func(connInfo httptrace.GotConnInfo) {
-			ent.Timings.Blocked = int(time.Since(connWaitStart).Milliseconds())
-		},
-
-		DNSStart: func(dnsInfo httptrace.DNSStartInfo) {
-			dnsStart = time.Now()
-		},
-		DNSDone: func(dnsInfo httptrace.DNSDoneInfo) {
-			ent.Timings.DNS = int(time.Since(dnsStart).Milliseconds())
-			if len(dnsInfo.Addrs) > 0 {
-				ent.ServerIP = dnsInfo.Addrs[0].String()
-			} else {
-				ent.ServerIP = "0.0.0.0"
-			}
-		},
-
-		ConnectStart: func(network, addr string) {
-			connStart = time.Now()
-		},
-		ConnectDone: func(network, addr string, err error) {
-			ent.Timings.Connect = int(time.Since(connStart).Milliseconds())
-			sendStart = time.Now()
-		},
-
-		TLSHandshakeStart: func() {
-			tlsStart = time.Now()
-		},
-		TLSHandshakeDone: func(connState tls.ConnectionState, err error) {
-			ent.Timings.SSL = int(time.Since(tlsStart).Milliseconds())
-		},
-
-		WroteRequest: func(info httptrace.WroteRequestInfo) {
-			ent.Timings.Send = int(time.Since(sendStart).Milliseconds())
-			waitStart = time.Now()
-		},
-		GotFirstResponseByte: func() {
-			ent.Timings.Wait = int(time.Since(waitStart).Milliseconds())
-			respStart = time.Now()
-		},
-	}
-	req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
+	rt := &requestTrace{}
+	req = req.WithContext(httptrace.WithClientTrace(req.Context(), rt.clientTrace()))
 
 	startTime := time.Now()
 	resp, err := c.RoundTripper.RoundTrip(req)
@@ -153,12 +132,107 @@ func (c *Recorder) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 
 	ent.Response, err = makeResponse(resp)
-	ent.Timings.Receive = int(time.Since(respStart).Milliseconds())
-	ent.Time = int(time.Since(startTime).Milliseconds())
+	endTime := time.Now()
+	ent.Timings, ent.ServerIP = rt.timings(endTime)
+	ent.Time = int(endTime.Sub(startTime).Milliseconds())
 	ent.Start = startTime.Format(time.RFC3339Nano)
 
-	c.HAR.Log.Entries = append(c.HAR.Log.Entries, ent)
+	c.addEntry(ent)
 	return resp, err
+}
+
+// requestTrace collects connection timestamps for a single request. The
+// httptrace hooks may run concurrently, and even after RoundTrip returns, so
+// every field is guarded by mu.
+type requestTrace struct {
+	mu sync.Mutex
+
+	getConn, gotConn          time.Time
+	dnsStart, dnsDone         time.Time
+	connectStart, connectDone time.Time
+	tlsStart, tlsDone         time.Time
+	wroteRequest, firstByte   time.Time
+	remoteAddr                net.Addr
+}
+
+// mark records the current time in *t unless it was already set, so that
+// repeated hooks (e.g. parallel dials) keep the earliest time.
+func (rt *requestTrace) mark(t *time.Time) {
+	rt.mu.Lock()
+	if t.IsZero() {
+		*t = time.Now()
+	}
+	rt.mu.Unlock()
+}
+
+func (rt *requestTrace) clientTrace() *httptrace.ClientTrace {
+	return &httptrace.ClientTrace{
+		GetConn: func(string) { rt.mark(&rt.getConn) },
+		GotConn: func(info httptrace.GotConnInfo) {
+			rt.mark(&rt.gotConn)
+			if info.Conn != nil {
+				rt.mu.Lock()
+				rt.remoteAddr = info.Conn.RemoteAddr()
+				rt.mu.Unlock()
+			}
+		},
+		DNSStart:     func(httptrace.DNSStartInfo) { rt.mark(&rt.dnsStart) },
+		DNSDone:      func(httptrace.DNSDoneInfo) { rt.mark(&rt.dnsDone) },
+		ConnectStart: func(_, _ string) { rt.mark(&rt.connectStart) },
+		ConnectDone: func(_, _ string, err error) {
+			if err == nil {
+				rt.mark(&rt.connectDone)
+			}
+		},
+		TLSHandshakeStart: func() { rt.mark(&rt.tlsStart) },
+		TLSHandshakeDone: func(_ tls.ConnectionState, err error) {
+			if err == nil {
+				rt.mark(&rt.tlsDone)
+			}
+		},
+		WroteRequest:         func(httptrace.WroteRequestInfo) { rt.mark(&rt.wroteRequest) },
+		GotFirstResponseByte: func() { rt.mark(&rt.firstByte) },
+	}
+}
+
+// timings converts the collected timestamps into HAR timings, with end as the
+// time the response body was fully read. It also returns the server IP.
+func (rt *requestTrace) timings(end time.Time) (Timings, string) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+
+	t := Timings{
+		DNS:     msBetween(rt.dnsStart, rt.dnsDone),
+		SSL:     msBetween(rt.tlsStart, rt.tlsDone),
+		Send:    msBetween(rt.gotConn, rt.wroteRequest),
+		Wait:    msBetween(rt.wroteRequest, rt.firstByte),
+		Receive: msBetween(rt.firstByte, end),
+	}
+	// In HAR, connect includes the TLS handshake.
+	connectEnd := rt.connectDone
+	if rt.tlsDone.After(connectEnd) {
+		connectEnd = rt.tlsDone
+	}
+	t.Connect = msBetween(rt.connectStart, connectEnd)
+	// Blocked is time spent waiting for a connection, excluding setting one up.
+	t.Blocked = max(msBetween(rt.getConn, rt.gotConn)-t.DNS-t.Connect, 0)
+
+	var ip string
+	if rt.remoteAddr != nil {
+		ip = rt.remoteAddr.String()
+		if host, _, err := net.SplitHostPort(ip); err == nil {
+			ip = host
+		}
+	}
+	return t, ip
+}
+
+// msBetween returns the milliseconds from start to end, or 0 if either is unset.
+func msBetween(start, end time.Time) int {
+	if start.IsZero() || end.IsZero() || end.Before(start) {
+		return 0
+	}
+	return int(end.Sub(start).Milliseconds())
 }
 
 // convert an http.Request to a harhar.Request
