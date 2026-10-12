@@ -1,3 +1,3 @@
-module github.com/pbnjay/harhar
+module github.com/callosum-api/harhar
 
-go 1.20
+go 1.26.2
