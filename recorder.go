@@ -219,12 +219,18 @@ func (rt *requestTrace) timings(end time.Time) (Timings, string) {
 
 	var ip string
 	if rt.remoteAddr != nil {
-		ip = rt.remoteAddr.String()
-		if host, _, err := net.SplitHostPort(ip); err == nil {
-			ip = host
-		}
+		ip = addrIP(rt.remoteAddr)
 	}
 	return t, ip
+}
+
+// addrIP returns the host part of a network address, e.g. "127.0.0.1".
+func addrIP(addr net.Addr) string {
+	s := addr.String()
+	if host, _, err := net.SplitHostPort(s); err == nil {
+		return host
+	}
+	return s
 }
 
 // msBetween returns the milliseconds from start to end, or 0 if either is unset.
