@@ -12,12 +12,16 @@ import (
 
 // ServeHTTP implements http.Handler (aka a Server-side recorder)
 func (c *Recorder) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	var err error
-	ent := Entry{}
-	ent.Request, err = makeRequest(req)
+	body, err := readBody(req.Body)
 	if err != nil {
-		log.Println("unable to record HAR for request ", req.URL.String())
+		log.Printf("harhar: reading request body for %s: %v", req.URL, err)
 	}
+	// Pass the handler a copy whose body replays what was read, including
+	// any read error.
+	req = req.WithContext(req.Context())
+	req.Body = replayBody(body, err)
+
+	ent := Entry{Request: makeRequest(req, body)}
 	if addr, ok := req.Context().Value(http.LocalAddrContextKey).(net.Addr); ok {
 		ent.ServerIP = addrIP(addr)
 	}
@@ -41,10 +45,7 @@ func (c *Recorder) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	w.Write(responseWrapper.body.Bytes())
 
 	resp := responseWrapper.AsResponse(req)
-	ent.Response, err = makeResponse(resp)
-	if err != nil {
-		log.Println("unable to record HAR for response ", req.URL.String())
-	}
+	ent.Response = makeResponse(resp, responseWrapper.body.Bytes())
 	c.addEntry(ent)
 }
 
