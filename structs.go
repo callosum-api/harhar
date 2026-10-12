@@ -10,16 +10,14 @@ type HAR struct {
 }
 
 // NewHAR creates a new HTTP Archive document with the provided Creator Name.
-// The recommended invocation is NewHAR(os.Args[0]).
+// The Creator Version defaults to the current time (formatted as "20060102150405").
 func NewHAR(creatorName string) *HAR {
-	v := time.Now().Format("20060102150405")
-
 	return &HAR{
 		Log: Log{
-			Version: v,
+			Version: "1.2",
 			Creator: Creator{
 				Name:    creatorName,
-				Version: v,
+				Version: time.Now().Format("20060102150405"),
 			},
 		},
 	}
@@ -39,7 +37,7 @@ type Creator struct {
 
 // Log represents a set of HTTP Request/Response Entries.
 type Log struct {
-	// Version of the log, defaults to the current time (formatted as "20060102150405")
+	// Version of the HAR format, "1.2".
 	Version string `json:"version"`
 
 	// Creator of this set of Log entries.
@@ -178,8 +176,8 @@ type Request struct {
 	// QueryParams parsed from the URL
 	QueryParams []NameValuePair `json:"queryString"`
 
-	// Body of the request (e.g. from a POST)
-	Body BodyType `json:"postData,omitempty"`
+	// Body of the request (e.g. from a POST), omitted when there is none.
+	Body BodyType `json:"postData,omitzero"`
 
 	// HeadersSize of the request header in bytes.
 	// NB counted from start of request to end of double CRLF before body.
