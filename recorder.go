@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-// Client embeds an upstream RoundTripper and wraps its methods to perform transparent HAR
+// Recorder embeds an upstream RoundTripper and wraps its methods to perform transparent HAR
 // logging for every request and response
 type Recorder struct {
 	mu           sync.Mutex
@@ -66,7 +66,7 @@ func NewRecorder() *Recorder {
 	}
 }
 
-// WriteLog writes the HAR log format to the filename given, then returns the
+// WriteFile writes the HAR log format to the filename given, then returns the
 // number of bytes.
 func (c *Recorder) WriteFile(filename string) (int, error) {
 	data, err := json.Marshal(c.HAR)
