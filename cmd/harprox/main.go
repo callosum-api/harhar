@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -18,43 +20,47 @@ import (
 func main() {
 	headerFile := flag.String("h", "", "load request headers from `headers.txt` and overwrite on passthrough")
 	rate := flag.Int("n", 5, "save HAR every `N` seconds")
-	addr := flag.String("i", ":6060", "`addr:post` to listen for requests")
+	addr := flag.String("i", ":6060", "`addr:port` to listen for requests")
 	prefix := flag.String("p", "", "`http://hostname/path` prefix to prepend on request paths")
 	outname := flag.String("o", "results.har", "output `filename.har` to save proxied requests")
 	serverRecorder := flag.Bool("s", false, "use server-side recorder for passthrough requests (less detail)")
 	flag.Parse()
 
-	var hits uint32
+	var hits atomic.Uint32
 
 	var overHeaders http.Header
 	if *headerFile != "" {
-		raw, err := os.ReadFile(*headerFile)
+		f, err := os.Open(*headerFile)
 		if err != nil {
 			log.Fatal(err)
 		}
-		for _, line := range strings.Split(string(raw), "\n") {
-			parts := strings.SplitN(line, ": ", 2)
-			overHeaders.Set(parts[0], parts[1])
+		overHeaders, err = parseHeaders(f)
+		f.Close()
+		if err != nil {
+			log.Fatalf("%s: %v", *headerFile, err)
 		}
 	}
 	rec := harhar.NewRecorder()
 	hcli := http.DefaultClient
 
-	pp, _ := url.Parse(*prefix)
-	realHost := pp.Host
+	if _, err := url.Parse(*prefix); err != nil {
+		log.Fatalf("invalid -p prefix: %v", err)
+	}
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		newurl := *prefix + r.URL.String()
-		passthrough, err := http.NewRequest(r.Method, newurl, r.Body)
-		if err != nil {
-			log.Fatal(err)
-		}
+		defer hits.Add(1)
 
+		newurl := *prefix + r.URL.String()
+		passthrough, err := http.NewRequestWithContext(r.Context(), r.Method, newurl, r.Body)
+		if err != nil {
+			log.Printf("bad proxy URL %q: %v", newurl, err)
+			http.Error(w, "bad request URL", http.StatusBadRequest)
+			return
+		}
+		passthrough.ContentLength = r.ContentLength
+
+		// The outbound Host comes from the prefix URL; r.Host is not copied.
 		for h, vals := range r.Header {
-			if strings.ToLower(h) == "host" {
-				passthrough.Header.Add("Host", realHost)
-				continue
-			}
 			for _, val := range vals {
 				passthrough.Header.Add(h, val)
 			}
@@ -64,8 +70,11 @@ func main() {
 		}
 		resp, err := hcli.Do(passthrough)
 		if err != nil {
-			log.Fatal(err)
+			log.Printf("proxying %s %s: %v", r.Method, newurl, err)
+			http.Error(w, "upstream request failed", http.StatusBadGateway)
+			return
 		}
+		defer resp.Body.Close()
 
 		for h, vals := range resp.Header {
 			for _, val := range vals {
@@ -74,13 +83,12 @@ func main() {
 		}
 		w.WriteHeader(resp.StatusCode)
 		io.Copy(w, resp.Body)
-		atomic.AddUint32(&hits, 1)
 	})
 
 	go func() {
 		var lasthits uint32
 		for range time.NewTicker(time.Second * time.Duration(*rate)).C {
-			newhits := atomic.LoadUint32(&hits)
+			newhits := hits.Load()
 			if newhits == lasthits {
 				continue
 			}
@@ -121,4 +129,24 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+// parseHeaders reads "Name: value" lines, skipping blank lines. A repeated
+// name keeps its last value.
+func parseHeaders(r io.Reader) (http.Header, error) {
+	h := make(http.Header)
+	sc := bufio.NewScanner(r)
+	for n := 1; sc.Scan(); n++ {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		name, value, ok := strings.Cut(line, ":")
+		name = strings.TrimSpace(name)
+		if !ok || name == "" {
+			return nil, fmt.Errorf("line %d: want \"Name: value\", got %q", n, line)
+		}
+		h.Set(name, strings.TrimSpace(value))
+	}
+	return h, sc.Err()
 }

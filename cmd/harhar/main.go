@@ -28,6 +28,7 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
+		resp.Body.Close()
 		log.Printf("got %s from %s\n", resp.Status, u)
 	}
 
