@@ -118,11 +118,11 @@ func main() {
 
 	if *serverRecorder {
 		// server-side har logging (FYI less network detail)
-		srv.Handler = rec
+		srv.Handler = rec.Middleware(http.DefaultServeMux)
 	} else {
 		// since we're proxying every request,
 		// client side works great and gets more detail
-		hcli = &http.Client{Transport: rec}
+		hcli = &http.Client{Transport: rec.Transport(nil)}
 	}
 
 	err = srv.Serve(ln)

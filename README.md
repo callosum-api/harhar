@@ -2,40 +2,56 @@ harhar
 ======
 
 HTTP Archive (HAR) recording for Go's `net/http`, on both the client side
-(`http.RoundTripper`) and the server side (`http.Handler`).
+(`http.RoundTripper`) and the server side (`http.Handler`). The resulting
+`.har` files open in browser dev tools and other HAR viewers.
+
+```
+go get github.com/callosum-api/harhar
+```
+
+Upgrading from the original API? See [MIGRATION.md](MIGRATION.md).
 
 Getting Started
 ---------------
 
-For logging from an `http.Client`, set the recorder as its Transport:
+Create a `Recorder`, then attach it to clients, servers, or both.
+
+To record the requests an `http.Client` makes, use `Transport`:
 
 ```go
-recorder := harhar.NewRecorder()
-client := &http.Client{
-	Transport: recorder,
-}
+rec := harhar.NewRecorder()
+client := &http.Client{Transport: rec.Transport(nil)} // nil wraps http.DefaultTransport
 ```
 
-To wrap a different upstream transport, replace `recorder.RoundTripper`
-before making any requests.
+Entries are recorded as response bodies finish, so read or close every
+response body, as `net/http` already requires.
 
-For logging requests handled by a server, set `recorder.Handler` to your
-handler and serve the recorder itself:
+To record the requests a server handles, use `Middleware`:
 
 ```go
-recorder := harhar.NewRecorder()
-recorder.Handler = mux
-http.ListenAndServe("localhost:8080", recorder)
+rec := harhar.NewRecorder()
+http.ListenAndServe("localhost:8080", rec.Middleware(mux))
 ```
 
-Then, whenever you're ready to generate the HAR output, call WriteFile:
+Then save the log whenever you like. Both calls are safe while requests
+are in flight:
 
 ```go
-recorder.WriteFile("output.har")
+rec.WriteFile("output.har") // or rec.WriteTo(w), or rec.HAR() for the data
 ```
 
-`WriteFile` is safe to call while requests are in flight. Other access to
-`recorder.HAR` is not synchronized with recording.
+Options
+-------
+
+```go
+rec := harhar.NewRecorder(
+	harhar.WithCreator("myapp", "1.2.3"),
+	harhar.WithRedactedHeaders(append(harhar.DefaultRedactedHeaders(), "X-Api-Key")...),
+	harhar.WithMaxBodySize(64<<10), // bytes recorded per body; -1 for no limit
+	harhar.WithMaxEntries(1000),    // keep only the latest entries
+	harhar.WithOnEntry(func(e harhar.Entry) { /* stream it somewhere */ }),
+)
+```
 
 Commands
 --------
@@ -46,11 +62,12 @@ Commands
 Security
 --------
 
-HAR files contain everything that was sent and received, including
-`Authorization` headers, cookies, and request and response bodies. Treat
-them like credentials. `WriteFile` creates files readable only by the
-current user.
+HAR files contain the traffic as sent and received. By default the values
+of `Authorization`, `Cookie`, `Proxy-Authorization` and `Set-Cookie` headers
+(and the cookies parsed from them) are recorded as `[REDACTED]`, but URLs,
+bodies and all other headers are recorded as is. Treat HAR files like
+credentials. `WriteFile` creates files readable only by the current user.
 
-Request and response bodies are held in memory in full, and every entry is
-kept until the program exits. Don't leave a recorder attached to
-long-running or high-volume traffic.
+Each body is recorded up to 1 MiB by default, and every entry is kept in
+memory until you call `Reset`. For long-running programs, use
+`WithMaxEntries` or `WithOnEntry`.

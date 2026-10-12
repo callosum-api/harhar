@@ -25,7 +25,7 @@ func TestGetOutputMatchesSpec(t *testing.T) {
 	req.AddCookie(&http.Cookie{Name: "s", Value: "v"})
 	mustDo(t, cli, req)
 
-	data, err := json.Marshal(rec.HAR)
+	data, err := json.Marshal(rec.HAR())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,12 +95,12 @@ func TestRedirectResendsBody(t *testing.T) {
 	if got := string(mustDo(t, cli, req)); got != "payload" {
 		t.Errorf("final body %q", got)
 	}
-	for i, ent := range rec.HAR.Log.Entries {
-		if ent.Request.Body.Content != "payload" {
-			t.Errorf("entry %d postData = %+v", i, ent.Request.Body)
+	for i, ent := range rec.HAR().Log.Entries {
+		if ent.Request.PostData.Text != "payload" {
+			t.Errorf("entry %d postData = %+v", i, ent.Request.PostData)
 		}
 	}
-	if ent := rec.HAR.Log.Entries[0]; ent.Response.RedirectURL != srv.URL+"/new" {
+	if ent := rec.HAR().Log.Entries[0]; ent.Response.RedirectURL != srv.URL+"/new" {
 		t.Errorf("redirectURL = %q", ent.Response.RedirectURL)
 	}
 }
@@ -111,13 +111,13 @@ func TestPostDataURLEncoded(t *testing.T) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
 	mustDo(t, cli, req)
 
-	pd := onlyEntry(t, rec).Request.Body
-	want := []PostNameValuePair{{Name: "b", Value: "2"}, {Name: "a", Value: "1"}, {Name: "b", Value: "x y!"}}
+	pd := onlyEntry(t, rec).Request.PostData
+	want := []PostParam{{Name: "b", Value: "2"}, {Name: "a", Value: "1"}, {Name: "b", Value: "x y!"}}
 	if !slices.Equal(pd.Params, want) {
 		t.Errorf("params = %+v, want %+v", pd.Params, want)
 	}
-	if pd.Content != "" {
-		t.Errorf("text = %q, want empty alongside params", pd.Content)
+	if pd.Text != "" {
+		t.Errorf("text = %q, want empty alongside params", pd.Text)
 	}
 }
 
@@ -134,11 +134,11 @@ func TestPostDataMultipart(t *testing.T) {
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	mustDo(t, cli, req)
 
-	want := []PostNameValuePair{
+	want := []PostParam{
 		{Name: "field", Value: "value"},
 		{Name: "upload", Value: "file contents", FileName: "notes.txt", ContentType: "application/octet-stream"},
 	}
-	if got := onlyEntry(t, rec).Request.Body.Params; !slices.Equal(got, want) {
+	if got := onlyEntry(t, rec).Request.PostData.Params; !slices.Equal(got, want) {
 		t.Errorf("params = %+v, want %+v", got, want)
 	}
 }
@@ -148,7 +148,7 @@ func TestPostDataMalformedMultipartFallsBackToText(t *testing.T) {
 	req, _ := http.NewRequest("POST", srv.URL, strings.NewReader("not multipart"))
 	req.Header.Set("Content-Type", "multipart/form-data; boundary=xyz")
 	mustDo(t, cli, req)
-	if pd := onlyEntry(t, rec).Request.Body; pd.Content != "not multipart" || pd.Params != nil {
+	if pd := onlyEntry(t, rec).Request.PostData; pd.Text != "not multipart" || pd.Params != nil {
 		t.Errorf("postData = %+v", pd)
 	}
 }
@@ -163,8 +163,8 @@ func TestBinaryResponseIsBase64(t *testing.T) {
 	if got := mustDo(t, cli, req); !bytes.Equal(got, bin) {
 		t.Errorf("caller got %x", got)
 	}
-	content := onlyEntry(t, rec).Response.Body
-	if content.Encoding != "base64" || content.Content != "//4AAQ==" {
+	content := onlyEntry(t, rec).Response.Content
+	if content.Encoding != "base64" || content.Text != "//4AAQ==" {
 		t.Errorf("content = %+v", content)
 	}
 }
@@ -179,8 +179,8 @@ func TestGzipResponseBodySizeUnknown(t *testing.T) {
 	req, _ := http.NewRequest("GET", srv.URL, nil)
 	mustDo(t, cli, req)
 	resp := onlyEntry(t, rec).Response
-	if resp.BodySize != -1 || resp.Body.Size != 5 || resp.Body.Content != "hello" {
-		t.Errorf("bodySize = %d, content = %+v", resp.BodySize, resp.Body)
+	if resp.BodySize != -1 || resp.Content.Size != 5 || resp.Content.Text != "hello" {
+		t.Errorf("bodySize = %d, content = %+v", resp.BodySize, resp.Content)
 	}
 }
 
@@ -194,12 +194,12 @@ func TestFailedRequestIsRecorded(t *testing.T) {
 	ln.Close()
 
 	rec := NewRecorder()
-	_, err = (&http.Client{Transport: rec}).Get("http://" + addr)
+	_, err = (&http.Client{Transport: rec.Transport(nil)}).Get("http://" + addr)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
 	resp := onlyEntry(t, rec).Response
-	if resp.StatusCode != 0 || resp.Comment == "" {
+	if resp.Status != 0 || resp.Comment == "" {
 		t.Errorf("response = %+v", resp)
 	}
 }
@@ -218,12 +218,12 @@ func TestResponseReadErrorReachesCaller(t *testing.T) {
 	if string(body) != "abc" || !errors.Is(err, io.ErrUnexpectedEOF) {
 		t.Errorf("caller got %q, %v; want \"abc\", unexpected EOF", body, err)
 	}
-	if ent := onlyEntry(t, rec); ent.Response.Body.Content != "abc" || ent.Response.Comment == "" {
+	if ent := onlyEntry(t, rec); ent.Response.Content.Text != "abc" || ent.Response.Comment == "" {
 		t.Errorf("response = %+v", ent.Response)
 	}
 }
 
-func TestServeHTTPRequestCapture(t *testing.T) {
+func TestMiddlewareRequestCapture(t *testing.T) {
 	srv, rec := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		// The handler still sees the body the recorder read.
 		r.ParseForm()
@@ -242,7 +242,7 @@ func TestServeHTTPRequestCapture(t *testing.T) {
 	if req.URL != srv.URL+"/form?q=1" {
 		t.Errorf("url = %q, want absolute", req.URL)
 	}
-	if len(req.Body.Params) != 1 || req.Body.Params[0].Value != "hello" {
-		t.Errorf("postData = %+v", req.Body)
+	if len(req.PostData.Params) != 1 || req.PostData.Params[0].Value != "hello" {
+		t.Errorf("postData = %+v", req.PostData)
 	}
 }

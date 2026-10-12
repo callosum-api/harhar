@@ -16,7 +16,7 @@ func newTestClient(t *testing.T, h http.HandlerFunc) (*httptest.Server, *http.Cl
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	rec := NewRecorder()
-	return srv, &http.Client{Transport: rec}, rec
+	return srv, &http.Client{Transport: rec.Transport(nil)}, rec
 }
 
 // mustDo performs req and returns the response body. It reports failures
@@ -38,10 +38,10 @@ func mustDo(t *testing.T, cli *http.Client, req *http.Request) []byte {
 
 func onlyEntry(t *testing.T, rec *Recorder) Entry {
 	t.Helper()
-	if n := len(rec.HAR.Log.Entries); n != 1 {
+	if n := len(rec.HAR().Log.Entries); n != 1 {
 		t.Fatalf("got %d entries, want 1", n)
 	}
-	return rec.HAR.Log.Entries[0]
+	return rec.HAR().Log.Entries[0]
 }
 
 func TestRoundTripGet(t *testing.T) {
@@ -60,16 +60,16 @@ func TestRoundTripGet(t *testing.T) {
 	if ent.Request.Method != "GET" || ent.Request.URL != srv.URL+"/path?a=1" {
 		t.Errorf("request = %s %s", ent.Request.Method, ent.Request.URL)
 	}
-	if len(ent.Request.QueryParams) != 1 || ent.Request.QueryParams[0] != (NameValuePair{Name: "a", Value: "1"}) {
-		t.Errorf("queryString = %+v", ent.Request.QueryParams)
+	if len(ent.Request.QueryString) != 1 || ent.Request.QueryString[0] != (NameValuePair{Name: "a", Value: "1"}) {
+		t.Errorf("queryString = %+v", ent.Request.QueryString)
 	}
-	if ent.Response.StatusCode != http.StatusTeapot {
-		t.Errorf("status = %d", ent.Response.StatusCode)
+	if ent.Response.Status != http.StatusTeapot {
+		t.Errorf("status = %d", ent.Response.Status)
 	}
-	if ent.Response.Body.Content != "hello" || ent.Response.Body.MIMEType != "text/plain" {
-		t.Errorf("content = %+v", ent.Response.Body)
+	if ent.Response.Content.Text != "hello" || ent.Response.Content.MIMEType != "text/plain" {
+		t.Errorf("content = %+v", ent.Response.Content)
 	}
-	if ent.Start == "" {
+	if ent.StartedDateTime.IsZero() {
 		t.Error("startedDateTime is empty")
 	}
 }
@@ -88,7 +88,7 @@ func TestWriteFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != len(data) {
+	if n != int64(len(data)) {
 		t.Errorf("WriteFile returned %d, file has %d bytes", n, len(data))
 	}
 	var h HAR
