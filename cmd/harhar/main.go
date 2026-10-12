@@ -10,7 +10,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/pbnjay/harhar"
+	"github.com/callosum-api/harhar"
 )
 
 func main() {
