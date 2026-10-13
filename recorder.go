@@ -1,357 +1,122 @@
-// Package harhar provides a minimal set of methods and structs to enable
-// HAR logging in a go net/http-based application.
+// Package harhar records HTTP traffic from Go's net/http in the HTTP
+// Archive (HAR) format.
+//
+// A Recorder collects entries from any number of clients and servers: use
+// Recorder.Transport to record the requests an http.Client makes, and
+// Recorder.Middleware to record the requests an http.Handler serves. Then
+// save the log with Recorder.WriteFile or Recorder.WriteTo.
+//
+// HAR files contain the traffic as sent and received. Credentials in the
+// Authorization, Proxy-Authorization, Cookie and Set-Cookie headers are
+// redacted by default (see DefaultHeaderRedactor and WithHeaderRedactor),
+// but bodies, URLs and other headers are recorded as is, so treat HAR files
+// as sensitive.
 package harhar
 
 import (
-	"bytes"
-	"crypto/tls"
 	"encoding/json"
 	"io"
-	"net"
-	"net/http"
-	"net/http/httptrace"
 	"os"
+	"path/filepath"
 	"sync"
-	"time"
 )
 
-// Client embeds an upstream RoundTripper and wraps its methods to perform transparent HAR
-// logging for every request and response
+// Recorder collects HAR entries. It is safe for concurrent use.
 type Recorder struct {
-	mu           sync.Mutex
-	RoundTripper http.RoundTripper `json:"-"`
-	Handler      http.Handler      `json:"-"`
+	cfg config
 
-	DisableHTTP2 func(bool)
-
-	HAR *HAR
+	mu      sync.Mutex
+	entries []Entry
+	oldest  int // index of the oldest entry once entries is a full ring
 }
 
-// NewRecorder returns a new Recorder object that fulfills the http.RoundTripper interface
-func NewRecorder() *Recorder {
-	h := NewHAR(os.Args[0])
-
-	// copy of DefaultTransport but with the
-	// ability to disable HTTP/2 as needed
-	tport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		DialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          100,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-
-		// if nil, then HTTP/2 is enabled
-		// if non-nil, then HTTP/2 is disabled
-		//TLSNextProto: make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
+// NewRecorder returns a Recorder configured by opts.
+func NewRecorder(opts ...Option) *Recorder {
+	cfg := defaultConfig()
+	for _, opt := range opts {
+		opt(&cfg)
 	}
+	return &Recorder{cfg: cfg}
+}
 
-	return &Recorder{
-		RoundTripper: tport,
-		Handler:      http.DefaultServeMux,
-		HAR:          h,
-		DisableHTTP2: func(disable2 bool) {
-			if disable2 {
-				if tport.TLSNextProto == nil {
-					tport.TLSNextProto = make(map[string]func(authority string, c *tls.Conn) http.RoundTripper)
-				}
-			} else {
-				tport.TLSNextProto = nil
-			}
-		},
+// add stores ent, subject to the WithMaxEntries limit, and passes it to the
+// WithOnEntry callback.
+func (r *Recorder) add(ent Entry) {
+	r.mu.Lock()
+	switch limit := r.cfg.maxEntries; {
+	case limit < 0 || len(r.entries) < limit:
+		r.entries = append(r.entries, ent)
+	case limit > 0:
+		// Full: overwrite the oldest entry.
+		r.entries[r.oldest] = ent
+		r.oldest = (r.oldest + 1) % limit
+	}
+	r.mu.Unlock()
+
+	if r.cfg.onEntry != nil {
+		r.cfg.onEntry(ent)
 	}
 }
 
-// WriteLog writes the HAR log format to the filename given, then returns the
-// number of bytes.
-func (c *Recorder) WriteFile(filename string) (int, error) {
-	data, err := json.Marshal(c.HAR)
+// HAR returns a snapshot of the log recorded so far, oldest entry first.
+// The entries share memory with the Recorder, so don't modify them.
+func (r *Recorder) HAR() *HAR {
+	h := NewHAR(r.cfg.creator.Name, r.cfg.creator.Version)
+	r.mu.Lock()
+	h.Log.Entries = append(h.Log.Entries, r.entries[r.oldest:]...)
+	h.Log.Entries = append(h.Log.Entries, r.entries[:r.oldest]...)
+	r.mu.Unlock()
+	return h
+}
+
+// Reset discards all recorded entries.
+func (r *Recorder) Reset() {
+	r.mu.Lock()
+	r.entries, r.oldest = nil, 0
+	r.mu.Unlock()
+}
+
+// WriteTo writes the log recorded so far to w as JSON.
+func (r *Recorder) WriteTo(w io.Writer) (int64, error) {
+	data, err := json.Marshal(r.HAR())
 	if err != nil {
 		return 0, err
 	}
-	return len(data), os.WriteFile(filename, data, 0644)
+	n, err := w.Write(data)
+	return int64(n), err
 }
 
-// RoundTrip implements http.RoundTripper
-func (c *Recorder) RoundTrip(req *http.Request) (*http.Response, error) {
-	// http.RoundTripper must be safe for concurrent use
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	var err error
-	ent := Entry{}
-	ent.Request, err = makeRequest(req)
+// WriteFile writes the log recorded so far to filename and returns the
+// number of bytes written.
+//
+// The file is replaced atomically and is readable only by the current user,
+// since HAR data usually contains sensitive information.
+func (r *Recorder) WriteFile(filename string) (int64, error) {
+	data, err := json.Marshal(r.HAR())
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-
-	// if we re-use a connection many trace hooks don't fire, so
-	// set a start time for everything
-	now := time.Now()
-	dnsStart := now
-	tlsStart := now
-	connWaitStart := now
-	connStart := now
-	sendStart := now
-	waitStart := now
-	respStart := now
-
-	trace := &httptrace.ClientTrace{
-		GetConn: func(hostPort string) {
-			connWaitStart = time.Now()
-		},
-		GotConn: func(connInfo httptrace.GotConnInfo) {
-			ent.Timings.Blocked = int(time.Since(connWaitStart).Milliseconds())
-		},
-
-		DNSStart: func(dnsInfo httptrace.DNSStartInfo) {
-			dnsStart = time.Now()
-		},
-		DNSDone: func(dnsInfo httptrace.DNSDoneInfo) {
-			ent.Timings.DNS = int(time.Since(dnsStart).Milliseconds())
-			if len(dnsInfo.Addrs) > 0 {
-				ent.ServerIP = dnsInfo.Addrs[0].String()
-			} else {
-				ent.ServerIP = "0.0.0.0"
-			}
-		},
-
-		ConnectStart: func(network, addr string) {
-			connStart = time.Now()
-		},
-		ConnectDone: func(network, addr string, err error) {
-			ent.Timings.Connect = int(time.Since(connStart).Milliseconds())
-			sendStart = time.Now()
-		},
-
-		TLSHandshakeStart: func() {
-			tlsStart = time.Now()
-		},
-		TLSHandshakeDone: func(connState tls.ConnectionState, err error) {
-			ent.Timings.SSL = int(time.Since(tlsStart).Milliseconds())
-		},
-
-		WroteRequest: func(info httptrace.WroteRequestInfo) {
-			ent.Timings.Send = int(time.Since(sendStart).Milliseconds())
-			waitStart = time.Now()
-		},
-		GotFirstResponseByte: func() {
-			ent.Timings.Wait = int(time.Since(waitStart).Milliseconds())
-			respStart = time.Now()
-		},
+	if err := writeFileAtomic(filename, data); err != nil {
+		return 0, err
 	}
-	req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
-
-	startTime := time.Now()
-	resp, err := c.RoundTripper.RoundTrip(req)
-	if err != nil {
-		return resp, err
-	}
-
-	ent.Response, err = makeResponse(resp)
-	ent.Timings.Receive = int(time.Since(respStart).Milliseconds())
-	ent.Time = int(time.Since(startTime).Milliseconds())
-	ent.Start = startTime.Format(time.RFC3339Nano)
-
-	c.HAR.Log.Entries = append(c.HAR.Log.Entries, ent)
-	return resp, err
+	return int64(len(data)), nil
 }
 
-// convert an http.Request to a harhar.Request
-func makeRequest(hr *http.Request) (Request, error) {
-	r := Request{
-		Method:      hr.Method,
-		URL:         hr.URL.String(),
-		HTTPVersion: hr.Proto,
-		HeadersSize: -1,
-		BodySize:    -1,
-	}
-
-	h2 := hr.Header.Clone()
-	buf := &bytes.Buffer{}
-	h2.Write(buf)
-	r.HeadersSize = buf.Len() + 4 // incl. CRLF CRLF
-
-	// parse out headers
-	r.Headers = make([]NameValuePair, 0, len(hr.Header))
-	for name, vals := range hr.Header {
-		for _, val := range vals {
-			r.Headers = append(r.Headers, NameValuePair{Name: name, Value: val})
-		}
-	}
-
-	// parse out cookies
-	r.Cookies = make([]Cookie, 0, len(hr.Cookies()))
-	for _, c := range hr.Cookies() {
-		nc := Cookie{
-			Name:     c.Name,
-			Path:     c.Path,
-			Value:    c.Value,
-			Domain:   c.Domain,
-			Expires:  c.Expires.Format(time.RFC3339Nano),
-			HTTPOnly: c.HttpOnly,
-			Secure:   c.Secure,
-		}
-		r.Cookies = append(r.Cookies, nc)
-	}
-
-	// parse query params
-	qp := hr.URL.Query()
-	r.QueryParams = make([]NameValuePair, 0, len(qp))
-	for name, vals := range qp {
-		for _, val := range vals {
-			r.QueryParams = append(r.QueryParams, NameValuePair{Name: name, Value: val})
-		}
-	}
-
-	if hr.Body == nil {
-		r.BodySize = 0
-		return r, nil
-	}
-
-	// read in all the data and replace the ReadCloser
-	bodyData, err := io.ReadAll(hr.Body)
+// writeFileAtomic writes data to a 0600 temp file next to filename, then
+// renames it into place so readers never see a partial file.
+func writeFileAtomic(filename string, data []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(filename), "."+filepath.Base(filename)+".*")
 	if err != nil {
-		return r, err
+		return err
 	}
-	hr.Body.Close()
-	bodbuf := bytes.NewReader(bodyData)
-	hr.Body = io.NopCloser(bodbuf)
+	defer os.Remove(f.Name()) // no-op once renamed
 
-	r.BodySize = len(bodyData)
-	r.Body.MIMEType = hr.Header.Get("Content-Type")
-	if r.Body.MIMEType == "" {
-		// default per RFC2616
-		r.Body.MIMEType = "application/octet-stream"
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
 	}
-	switch r.Body.MIMEType {
-	case "form-data", "multipart/form-data":
-		err = hr.ParseMultipartForm(32 << 20) // 32 MB
-		if err != nil {
-			return r, err
-		}
-		bodbuf.Seek(0, io.SeekStart)
-		for key, fheads := range hr.MultipartForm.File {
-			for _, fh := range fheads {
-				fhandle, err := fh.Open()
-				if err != nil {
-					return r, err
-				}
-				fileContents, err := io.ReadAll(fhandle)
-				fhandle.Close()
-				if err != nil {
-					return r, err
-				}
-
-				r.Body.Params = append(r.Body.Params, PostNameValuePair{
-					Name:        key,
-					Value:       string(fileContents),
-					FileName:    fh.Filename,
-					ContentType: fh.Header.Get("Content-Type"),
-				})
-			}
-		}
-		for key, vals := range hr.MultipartForm.Value {
-			for _, val := range vals {
-				r.Body.Params = append(r.Body.Params, PostNameValuePair{
-					Name:  key,
-					Value: val,
-				})
-			}
-		}
-
-	case "application/x-www-form-urlencoded":
-		err = hr.ParseForm()
-		if err != nil {
-			return r, err
-		}
-		bodbuf.Seek(0, io.SeekStart)
-		for key, vals := range hr.PostForm {
-			for _, val := range vals {
-				r.Body.Params = append(r.Body.Params, PostNameValuePair{
-					Name:  key,
-					Value: val,
-				})
-			}
-		}
-
-	default:
-		r.Body.Content = string(bodyData)
+	if err := f.Close(); err != nil {
+		return err
 	}
-
-	return r, nil
-}
-
-// convert an http.Response to a harhar.Response
-func makeResponse(hr *http.Response) (Response, error) {
-	r := Response{
-		StatusCode:  hr.StatusCode,
-		StatusText:  http.StatusText(hr.StatusCode),
-		HTTPVersion: hr.Proto,
-		HeadersSize: -1,
-		BodySize:    -1,
-	}
-
-	h2 := hr.Header.Clone()
-	buf := &bytes.Buffer{}
-	h2.Write(buf)
-	r.HeadersSize = buf.Len() + 4 // incl. CRLF CRLF
-
-	// parse out headers
-	r.Headers = make([]NameValuePair, 0, len(hr.Header))
-	for name, vals := range hr.Header {
-		for _, val := range vals {
-			r.Headers = append(r.Headers, NameValuePair{Name: name, Value: val})
-		}
-	}
-	rurl, err := hr.Location()
-	if err == nil {
-		r.RedirectURL = rurl.String()
-	}
-
-	// parse out cookies
-	r.Cookies = make([]Cookie, 0, len(hr.Cookies()))
-	for _, c := range hr.Cookies() {
-		nc := Cookie{
-			Name:     c.Name,
-			Path:     c.Path,
-			Value:    c.Value,
-			Domain:   c.Domain,
-			Expires:  c.Expires.Format(time.RFC3339Nano),
-			HTTPOnly: c.HttpOnly,
-			Secure:   c.Secure,
-		}
-		r.Cookies = append(r.Cookies, nc)
-	}
-
-	// FIXME: net/http transparently decompresses content,
-	// so r.Body.Size and r.Body.Compression are not true to the server's response
-	// also, if the response is not utf-8, then r.Body.Content and r.Body.Encoding
-	// are not properly handled (spec says to decode anything into UTF-8)
-	//
-	// see hr.Uncompressed for next steps
-
-	// read in all the data and replace the ReadCloser
-	bodyData, err := io.ReadAll(hr.Body)
-	if err != nil {
-		return r, err
-	}
-	hr.Body.Close()
-	hr.Body = io.NopCloser(bytes.NewReader(bodyData))
-	r.Body.Content = string(bodyData)
-	r.Body.Compression = 0
-	r.Body.Size = len(bodyData)
-	r.BodySize = r.Body.Size
-
-	r.Body.MIMEType = hr.Header.Get("Content-Type")
-	if r.Body.MIMEType == "" {
-		// default per RFC2616
-		r.Body.MIMEType = "application/octet-stream"
-	}
-
-	return r, nil
+	return os.Rename(f.Name(), filename)
 }

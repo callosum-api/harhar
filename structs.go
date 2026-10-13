@@ -2,35 +2,36 @@ package harhar
 
 import "time"
 
-// HAR represents the root of an HTTP Archive document.
+// FormatVersion is the version of the HAR format these types implement.
+const FormatVersion = "1.2"
+
+// HAR represents the root of an HTTP Archive document. Field and type names
+// follow the HAR 1.2 spec, and the types can be used to read HAR files as
+// well as write them.
 //
-// W3C Spec: https://w3c.github.io/web-performance/specs/HAR/Overview.html
+// Spec: http://www.softwareishard.com/blog/har-12-spec/
 type HAR struct {
 	Log Log `json:"log"`
 }
 
-// NewHAR creates a new HTTP Archive document with the provided Creator Name.
-// The recommended invocation is NewHAR(os.Args[0]).
-func NewHAR(creatorName string) *HAR {
-	v := time.Now().Format("20060102150405")
-
+// NewHAR creates an empty HTTP Archive document with the given creator.
+func NewHAR(creatorName, creatorVersion string) *HAR {
 	return &HAR{
 		Log: Log{
-			Version: v,
-			Creator: Creator{
-				Name:    creatorName,
-				Version: v,
-			},
+			Version: FormatVersion,
+			Creator: Creator{Name: creatorName, Version: creatorVersion},
+			Entries: []Entry{},
 		},
 	}
 }
 
-// Creator describes the source of the logged requests/responses.
+// Creator describes the application that created the log, or the browser
+// that made the requests.
 type Creator struct {
-	// Name of the HTTP creator source.
+	// Name of the application.
 	Name string `json:"name"`
 
-	// Version of the HTTP creator source.
+	// Version of the application.
 	Version string `json:"version"`
 
 	// Comment can be added by the user
@@ -39,7 +40,7 @@ type Creator struct {
 
 // Log represents a set of HTTP Request/Response Entries.
 type Log struct {
-	// Version of the log, defaults to the current time (formatted as "20060102150405")
+	// Version of the HAR format, FormatVersion.
 	Version string `json:"version"`
 
 	// Creator of this set of Log entries.
@@ -51,8 +52,7 @@ type Log struct {
 	// Pages contain information about request groupings, such as a page loaded by a web browser.
 	Pages []Page `json:"pages,omitempty"`
 
-	// Entries contains all of the Request and Response details that passed
-	// through this Client.
+	// Entries contains all of the recorded requests and responses.
 	Entries []Entry `json:"entries"`
 
 	// Comment can be added to the log to describe the particulars of this data.
@@ -61,8 +61,8 @@ type Log struct {
 
 // Page represents a group of requests (e.g. an HTML document with multiple resources)
 type Page struct {
-	// Start of the page load (ISO 8601)
-	Start string `json:"startedDateTime"`
+	// StartedDateTime of the page load.
+	StartedDateTime time.Time `json:"startedDateTime"`
 
 	// ID used to reference this page grouping (Entry.PageRef)
 	ID string `json:"id"`
@@ -71,19 +71,21 @@ type Page struct {
 	Title string `json:"title"`
 
 	// PageTimings contains detailing timing info about the page load
-	PageTimings PageTiming `json:"pageTimings"`
+	PageTimings PageTimings `json:"pageTimings"`
 
 	// Comment can be added by the user
 	Comment string `json:"comment,omitempty"`
 }
 
-// PageTiming contains DOM-related page timing information.
-type PageTiming struct {
-	// OnContentLoad is milliseconds since Start for page content to be loaded.
-	OnContentLoad int `json:"onContentLoad,omitempty"`
+// PageTimings contains DOM-related page timing information.
+type PageTimings struct {
+	// OnContentLoad is milliseconds since StartedDateTime for page content
+	// to be loaded, or -1 if not applicable.
+	OnContentLoad float64 `json:"onContentLoad,omitempty"`
 
-	// OnLoad is milliseconds since Start for OnLoad event to be fired.
-	OnLoad int `json:"onLoad,omitempty"`
+	// OnLoad is milliseconds since StartedDateTime for the load event to
+	// fire, or -1 if not applicable.
+	OnLoad float64 `json:"onLoad,omitempty"`
 
 	// Comment can be added by the user
 	Comment string `json:"comment,omitempty"`
@@ -94,11 +96,11 @@ type Entry struct {
 	// PageRef references the parent page (if supported), Page.ID.
 	PageRef string `json:"pageref,omitempty"`
 
-	// Start of the request (ISO 8601)
-	Start string `json:"startedDateTime"`
+	// StartedDateTime of the request.
+	StartedDateTime time.Time `json:"startedDateTime"`
 
-	// Total time in milliseconds, Time=SUM(Timings.*)
-	Time int `json:"time"`
+	// Time is the total elapsed time of the request in milliseconds.
+	Time float64 `json:"time"`
 
 	// Request details
 	Request Request `json:"request"`
@@ -107,7 +109,7 @@ type Entry struct {
 	Response Response `json:"response"`
 
 	// Cache contains info about how the request was/is now cached.
-	Cache CacheState `json:"cache"`
+	Cache Cache `json:"cache"`
 
 	// Timings contains detail info about the request/response round trip.
 	Timings Timings `json:"timings"`
@@ -122,8 +124,8 @@ type Entry struct {
 	Comment string `json:"comment,omitempty"`
 }
 
-// CacheState represents the cache status before and after a request.
-type CacheState struct {
+// Cache represents the cache status before and after a request.
+type Cache struct {
 	// Before contains the cache status before the request
 	Before *CacheInfo `json:"beforeRequest,omitempty"`
 
@@ -134,25 +136,24 @@ type CacheState struct {
 	Comment string `json:"comment,omitempty"`
 }
 
-// Timings contains various timings for network latency.
+// Timings breaks down the time spent on a request, in milliseconds.
+// Blocked, DNS, Connect and SSL are -1 when they don't apply, such as on a
+// reused connection.
 type Timings struct {
-	// Send is the Time required to send this request to the server.
-	Send int `json:"send"`
-	// Wait is the Time spent waiting on a response from the server.
-	Wait int `json:"wait"`
-	// Receive is the Time spent reading the entire response from the server.
-	Receive int `json:"receive"`
-
-	// Blocked is the Time spent in a queue waiting for a network connection
-	Blocked int `json:"blocked,omitempty"`
-	// DNS is the domain name resolution time - The time required to resolve a host name
-	DNS int `json:"dns,omitempty"`
-	// Connect is the Time required to create TCP connection.
-	Connect int `json:"connect,omitempty"`
-
-	// SSL is the Time required to negotiate the SSL/TLS connection.
-	// Note: if defined this time is included in Connect.
-	SSL int `json:"ssl,omitempty"`
+	// Blocked is the time spent waiting for a network connection.
+	Blocked float64 `json:"blocked"`
+	// DNS is the time spent resolving the host name.
+	DNS float64 `json:"dns"`
+	// Connect is the time spent creating the connection, including SSL.
+	Connect float64 `json:"connect"`
+	// Send is the time spent sending the request.
+	Send float64 `json:"send"`
+	// Wait is the time spent waiting for the first byte of the response.
+	Wait float64 `json:"wait"`
+	// Receive is the time spent reading the response body.
+	Receive float64 `json:"receive"`
+	// SSL is the time spent on the TLS handshake. It is included in Connect.
+	SSL float64 `json:"ssl"`
 
 	// Comment can be added by the user
 	Comment string `json:"comment,omitempty"`
@@ -175,36 +176,36 @@ type Request struct {
 	// Headers sent with the request
 	Headers []NameValuePair `json:"headers"`
 
-	// QueryParams parsed from the URL
-	QueryParams []NameValuePair `json:"queryString"`
+	// QueryString parameters parsed from the URL
+	QueryString []NameValuePair `json:"queryString"`
 
-	// Body of the request (e.g. from a POST)
-	Body BodyType `json:"postData,omitempty"`
+	// PostData of the request (e.g. from a POST), omitted when there is none.
+	PostData PostData `json:"postData,omitzero"`
 
-	// HeadersSize of the request header in bytes.
-	// NB counted from start of request to end of double CRLF before body.
-	HeadersSize int `json:"headersSize"`
+	// HeadersSize of the request header in bytes, or -1 if unknown.
+	HeadersSize int64 `json:"headersSize"`
 
-	// BodySize of the request body in bytes.
-	BodySize int `json:"bodySize"`
+	// BodySize of the request body in bytes, or -1 if unknown.
+	BodySize int64 `json:"bodySize"`
 
 	// Comment can be added by the user
 	Comment string `json:"comment,omitempty"`
 }
 
-// BodyType contains information about the Body of a request
-type BodyType struct {
+// PostData describes the body of a request.
+type PostData struct {
 	// MIMEType of the body content
 	MIMEType string `json:"mimeType"`
-	// List of (parsed URL-encoded) parameters, exclusive with Content
-	Params []PostNameValuePair `json:"params,omitempty"`
-	// Content of the post as plain text (exclusive with Params)
-	Content string `json:"text,omitempty"`
+	// Params parsed from a form body. Exclusive with Text.
+	Params []PostParam `json:"params,omitempty"`
+	// Text of the body. Exclusive with Params.
+	Text string `json:"text,omitempty"`
+	// Comment can be added by the user
+	Comment string `json:"comment,omitempty"`
 }
 
-// PostNameValuePair contains the description and content of a POSTed name and value pair.
-// In particular this can include files.
-type PostNameValuePair struct {
+// PostParam is a posted form field or uploaded file.
+type PostParam struct {
 	// Name of the posted parameter
 	Name string `json:"name"`
 	// Value of the parameter or file contents
@@ -220,8 +221,8 @@ type PostNameValuePair struct {
 
 // Response contains the response description and content.
 type Response struct {
-	// StatusCode indicates the response status
-	StatusCode int `json:"status"` // 200
+	// Status code of the response, or 0 if the request failed.
+	Status int `json:"status"`
 
 	// StatusText describes the response status
 	StatusText string `json:"statusText"` // "OK"
@@ -236,35 +237,32 @@ type Response struct {
 	Cookies []Cookie `json:"cookies"`
 
 	// Headers sent with the response
-	// NB Headers may include values added by the browser but not included in server's response.
 	Headers []NameValuePair `json:"headers"`
 
-	// Body describes the response body content.
-	Body BodyResponseType `json:"content"`
+	// Content describes the response body.
+	Content Content `json:"content"`
 
-	// HeadersSize of the request header in bytes.
-	// NB counted from start of request to end of double CRLF before body.
-	// NB only includes the size of headers sent by the server, not those added by a browser.
-	HeadersSize int `json:"headersSize"`
+	// HeadersSize of the response header in bytes, or -1 if unknown.
+	HeadersSize int64 `json:"headersSize"`
 
-	// BodySize of the response body in bytes (as sent)
-	BodySize int `json:"bodySize"`
+	// BodySize of the response body in bytes as sent, or -1 if unknown.
+	BodySize int64 `json:"bodySize"`
 
 	// Comment can be added by the user
 	Comment string `json:"comment,omitempty"`
 }
 
-// BodyResponseType contains various information about the response body.
-type BodyResponseType struct {
-	// Size of response content in bytes (decompressed).
-	Size int `json:"size"`
+// Content describes the body of a response.
+type Content struct {
+	// Size of the body in bytes, after decompression.
+	Size int64 `json:"size"`
 	// Compression is the number of bytes saved by compression
-	Compression int `json:"compression,omitempty"`
+	Compression int64 `json:"compression,omitempty"`
 	// MIMEType of the body content
 	MIMEType string `json:"mimeType"`
-	// Content is the text content of the response body.
-	Content string `json:"text,omitempty"`
-	// Encoding used by the response.
+	// Text of the body, encoded as described by Encoding.
+	Text string `json:"text,omitempty"`
+	// Encoding of Text: "" for plain text, or "base64".
 	Encoding string `json:"encoding,omitempty"`
 	// Comment can be added by the user
 	Comment string `json:"comment,omitempty"`
@@ -283,14 +281,14 @@ type NameValuePair struct {
 
 // CacheInfo describes cache properties of known content
 type CacheInfo struct {
-	// Expiration time of the cached content (ISO 8601)
-	Expires string `json:"expires,omitempty"`
+	// Expires is when the cached content expires.
+	Expires time.Time `json:"expires,omitzero"`
 
-	// LastAccess time of the cached content (ISO 8601)
-	LastAccess string `json:"lastAccess"`
+	// LastAccess is when the cached content was last used.
+	LastAccess time.Time `json:"lastAccess"`
 
 	// ETag referencing the cached content
-	ETag string `json:"etag"`
+	ETag string `json:"eTag"`
 
 	// HitCount is the number of the times the cached content has been opened.
 	HitCount int `json:"hitCount"`
@@ -309,10 +307,12 @@ type Cookie struct {
 	Path string `json:"path,omitempty"`
 	// Domain is the hostname the cookie applies to.
 	Domain string `json:"domain,omitempty"`
-	// Expires describes the cookie expiration time (ISO 8601).
-	Expires string `json:"expires,omitempty"`
+	// Expires is when the cookie expires, if set.
+	Expires time.Time `json:"expires,omitzero"`
 	// Secure is true if the cookie was transferred over SSL.
 	Secure bool `json:"secure,omitempty"`
 	// HTTPOnly flag status of the cookie.
 	HTTPOnly bool `json:"httpOnly,omitempty"`
+	// Comment can be added by the user
+	Comment string `json:"comment,omitempty"`
 }
