@@ -82,6 +82,34 @@ harhar.WithHeaderRedactor(func(name, value string) string {
 
 `WithHeaderRedactor(nil)` records every header as is.
 
+Mocking
+-------
+
+The `mock` package answers requests with the responses in a HAR file, so
+tests can run against a recording instead of a live API:
+
+```go
+import "github.com/callosum-api/harhar/mock"
+
+m, err := mock.Load("recorded.har") // or mock.New(rec.HAR())
+
+client := &http.Client{Transport: m.Transport(nil)} // client side, no network
+srv := httptest.NewServer(m.Middleware(nil))        // or a fake server
+```
+
+Requests match recorded entries by method, path and query. Repeated
+requests get the matching responses in the order they were recorded, and
+the last one repeats. Requests that match nothing go to the fallback you
+pass. With `nil`, the transport returns `mock.ErrNoMatch` and the server
+returns a 404.
+
+The fake server answers for every host in the recording. In response
+headers and text bodies, it rewrites URLs that point to a recorded host so
+they point to the fake server, so redirects and links keep working. On the
+client side, `mock.WithHost("api.example.com", "localhost:8080")` serves a
+recording made against one host for requests to another, rewriting URLs to
+match. Use `mock.WithMatcher` to change how requests are matched.
+
 Commands
 --------
 
@@ -102,8 +130,46 @@ go run github.com/callosum-api/harhar/cmd/harprox@latest -p https://api.example.
 It saves the file every 5 seconds while there's new traffic (`-n`) and
 again on Ctrl-C. `-h headers.txt` adds `Name: value` headers to every
 proxied request, such as an API token; those headers are redacted in the
-HAR file. It listens only on localhost unless you pass `-i`. Run either
-command with `-help` for all flags.
+HAR file. It listens only on localhost unless you pass `-i`.
+
+`harmock` is a mock server that answers with the responses in HAR files. It
+listens on the same address as `harprox` by default. A client set up to
+record through `harprox` can therefore run against the recording unchanged:
+
+```bash
+go run github.com/callosum-api/harhar/cmd/harmock@latest out.har
+```
+
+On startup it lists every route it answers, with the recorded statuses in
+order, and the settings in effect. It then logs each request and how it was
+answered. `-ignore-query name` ignores a parameter such as a cache buster
+when matching. `-fallback URL` forwards unmatched requests to a real server
+instead of returning a 404. `-host recorded=host` rewrites one recorded host
+to some other host instead of to the mock.
+
+`harreplay` sends the recorded requests again and compares each new response
+with the recorded one:
+
+```bash
+go run github.com/callosum-api/harhar/cmd/harreplay@latest -t https://staging.example.com out.har
+```
+
+```
+ok    GET    https://staging.example.com/v1/items  200
+DIFF  GET    https://staging.example.com/v1/me  200 -> 401
+        status: 200 -> 401
+        body line 1: "it's you" -> "unauthorized"
+```
+
+Status, `Content-Type` and body are always compared. `-headers` adds the
+other response headers, except ones such as `Date` that change on every
+response. JSON bodies are compared value by value, and `-ignore-json key`
+skips a member such as a timestamp. URLs naming the recorded hosts are
+rewritten to the `-t` target before comparing. Credentials redacted in the
+recording aren't sent, so supply them with `-h headers.txt`. `-o` records
+the new traffic. The exit status is 1 if anything differed or failed.
+
+Run any command with `-help` for all flags.
 
 Security
 --------

@@ -6,40 +6,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"reflect"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/callosum-api/harhar"
+	"github.com/callosum-api/harhar/internal/headerfile"
 )
-
-func TestParseHeaders(t *testing.T) {
-	// CRLF line endings, a trailing newline, blank lines, colons in values,
-	// and a repeated name used to panic or be misparsed.
-	in := "Authorization: Bearer abc\r\n\r\nx-trace:  t1 \nX-Trace: t2\nReferer: https://example.com/\n"
-	got, err := parseHeaders(strings.NewReader(in))
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := http.Header{
-		"Authorization": {"Bearer abc"},
-		"X-Trace":       {"t2"},
-		"Referer":       {"https://example.com/"},
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("got %v, want %v", got, want)
-	}
-}
-
-func TestParseHeadersInvalid(t *testing.T) {
-	for _, in := range []string{"no colon here\n", ": empty name\n"} {
-		if _, err := parseHeaders(strings.NewReader(in)); err == nil {
-			t.Errorf("parseHeaders(%q) succeeded, want error", in)
-		}
-	}
-}
 
 func TestProxy(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -51,7 +24,7 @@ func TestProxy(t *testing.T) {
 	var recorded []harhar.Entry
 	var mu sync.Mutex
 	rec := harhar.NewRecorder(
-		harhar.WithHeaderRedactor(headerRedactor(http.Header{"X-Token": {"secret"}})),
+		harhar.WithHeaderRedactor(headerfile.Redactor(http.Header{"X-Token": {"secret"}})),
 		harhar.WithOnEntry(func(e harhar.Entry) { mu.Lock(); recorded = append(recorded, e); mu.Unlock() }),
 	)
 	proxy := newProxy(target, http.Header{"X-Token": {"secret"}})
@@ -117,20 +90,6 @@ func TestSecondsOrDuration(t *testing.T) {
 		var d secondsOrDuration
 		if err := d.Set(in); err == nil {
 			t.Errorf("Set(%q) succeeded, want error", in)
-		}
-	}
-}
-
-func TestHeaderRedactor(t *testing.T) {
-	redact := headerRedactor(http.Header{"X-Token": {"secret"}, "Authorization": {"Bearer abc"}})
-	for _, tc := range []struct{ name, in, want string }{
-		{"X-Token", "secret", harhar.RedactedValue},
-		{"Authorization", "Bearer abc", "Bearer " + harhar.RedactedValue}, // keeps the default's partial redaction
-		{"Cookie", "id=1", "id=" + harhar.RedactedValue},
-		{"X-Other", "visible", "visible"},
-	} {
-		if got := redact(tc.name, tc.in); got != tc.want {
-			t.Errorf("redact(%q, %q) = %q, want %q", tc.name, tc.in, got, tc.want)
 		}
 	}
 }

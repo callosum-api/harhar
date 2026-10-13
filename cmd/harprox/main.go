@@ -9,12 +9,10 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -29,6 +27,7 @@ import (
 	"time"
 
 	"github.com/callosum-api/harhar"
+	"github.com/callosum-api/harhar/internal/headerfile"
 )
 
 func main() {
@@ -55,20 +54,15 @@ func main() {
 
 	var overHeaders http.Header
 	if *headerFile != "" {
-		f, err := os.Open(*headerFile)
+		overHeaders, err = headerfile.Load(*headerFile)
 		if err != nil {
 			log.Fatal(err)
-		}
-		overHeaders, err = parseHeaders(f)
-		f.Close()
-		if err != nil {
-			log.Fatalf("%s: %v", *headerFile, err)
 		}
 	}
 
 	var entries atomic.Uint64
 	rec := harhar.NewRecorder(
-		harhar.WithHeaderRedactor(headerRedactor(overHeaders)),
+		harhar.WithHeaderRedactor(headerfile.Redactor(overHeaders)),
 		harhar.WithMaxBodySize(*maxBody),
 		harhar.WithOnEntry(func(harhar.Entry) { entries.Add(1) }),
 	)
@@ -149,40 +143,6 @@ func newProxy(target *url.URL, headers http.Header) *httputil.ReverseProxy {
 			}
 		},
 	}
-}
-
-// headerRedactor applies harhar.DefaultHeaderRedactor, and also fully
-// redacts the headers set with -h, which are usually credentials.
-func headerRedactor(injected http.Header) func(name, value string) string {
-	return func(name, value string) string {
-		if redacted := harhar.DefaultHeaderRedactor(name, value); redacted != value {
-			return redacted
-		}
-		if _, ok := injected[name]; ok {
-			return harhar.RedactedValue
-		}
-		return value
-	}
-}
-
-// parseHeaders reads "Name: value" lines, skipping blank lines. A repeated
-// name keeps its last value.
-func parseHeaders(r io.Reader) (http.Header, error) {
-	h := make(http.Header)
-	sc := bufio.NewScanner(r)
-	for n := 1; sc.Scan(); n++ {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" {
-			continue
-		}
-		name, value, ok := strings.Cut(line, ":")
-		name = strings.TrimSpace(name)
-		if !ok || name == "" {
-			return nil, fmt.Errorf("line %d: want \"Name: value\", got %q", n, line)
-		}
-		h.Set(name, strings.TrimSpace(value))
-	}
-	return h, sc.Err()
 }
 
 // secondsOrDuration is a flag.Value for a positive duration such as "30s".

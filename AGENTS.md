@@ -10,7 +10,10 @@ code, plus a short section for working on this repo. Humans should start with
 harhar records `net/http` traffic as HTTP Archive (HAR 1.2) files. A
 `*Recorder` stores entries. You attach it to an `http.Client` with
 `rec.Transport(base)`, to an `http.Handler` with `rec.Middleware(next)`, or to
-both. It has no dependencies outside the standard library and needs Go 1.24+.
+both. The `mock` sub-package plays recorded entries back, standing in for a
+server on the client side (`http.RoundTripper`) or the server side
+(`http.Handler`). It has no dependencies outside the standard library and needs
+Go 1.24+.
 
 ## When to use it
 
@@ -25,10 +28,17 @@ Good fits:
   reverse proxy (see [Commands](#commands)).
 - Reading existing `.har` files. The exported types (`HAR`, `Entry`,
   `Request`, ...) follow the spec and can be decoded with `encoding/json`.
+- Mocking an API in tests from a recording, with `mock` (see
+  [Mocking](#mocking)), or as a standalone server with `harmock`. Both also
+  read HAR files saved by browsers.
+- Checking a server against a recording, such as a new deployment against
+  production traffic, with `harreplay`.
 
 Not a fit:
 
-- Replaying or mocking HTTP. harhar only records; it has no playback.
+- Load testing. `harreplay` sends recorded requests one at a time, in order.
+- Mocks that need logic. `mock` answers with fixed recorded responses; it
+  can't compute a response from the request.
 - Exact wire capture. On the server side, headers that `net/http` adds after
   the handler runs (`Date`, `Content-Length`) are not recorded. Response text
   is not transcoded to UTF-8.
@@ -153,6 +163,46 @@ For server-side tests, use `httptest.NewServer(rec.Middleware(h))` and call
 `srv.Close()` before inspecting entries. [example_test.go](example_test.go)
 has runnable versions of both.
 
+## Mocking
+
+```go
+import "github.com/callosum-api/harhar/mock"
+
+m, err := mock.Load("recorded.har") // or mock.New(rec.HAR())
+
+// Client side: no network access at all.
+client := &http.Client{Transport: m.Transport(nil)}
+
+// Server side: a fake server that answers for every recorded host.
+srv := httptest.NewServer(m.Middleware(nil))
+```
+
+- The argument is the fallback for requests that match no entry. `nil` makes
+  the transport return an error wrapping `mock.ErrNoMatch`, and the
+  middleware return a 404. Pass a real transport or handler to mock only
+  some requests.
+- Matching uses method, path and query, and query order doesn't matter.
+  Headers are ignored. Among matching entries, the mock prefers ones for the
+  same host, then ones with an identical request body. Matching entries are
+  served in recorded order, and the last one repeats. A recorded
+  pending -> pending -> done poll therefore plays back as it happened.
+  `m.Reset()` rewinds, and `m.Unused()` lists entries never served.
+- `mock.WithMatcher(fn)` replaces the matcher. Wrap `mock.DefaultMatcher` to
+  ignore, say, a cache-busting query parameter.
+- Hosts: on the client side, requests must use the recorded host unless
+  `mock.WithHost(recorded, host)` maps it to another. On the server side,
+  the Host header is ignored for matching, and URLs naming any recorded host
+  are rewritten to the mock server's scheme and host.
+- Rewriting covers response headers (`Location`, `Link`, ...) and text
+  bodies, but not compressed or base64 bodies. Only `http://host`,
+  `https://host` and `//host` URLs are rewritten, including JSON-escaped
+  `\/\/`. Bare hostnames are left alone. `Set-Cookie` `Domain=` attributes
+  for rewritten hosts are dropped.
+- Entries recorded as failures (status 0) fail again. The transport returns
+  an error, and the middleware aborts the connection.
+- Recorded headers are replayed in their redacted form (`Bearer [REDACTED]`).
+  `Content-Length` and hop-by-hop headers are dropped and recomputed.
+
 ## Commands
 
 No code required:
@@ -165,6 +215,14 @@ go run github.com/callosum-api/harhar/cmd/harhar@latest -o out.har https://examp
 go run github.com/callosum-api/harhar/cmd/harprox@latest -p https://api.example.com -o out.har
 ```
 
+```bash
+go run github.com/callosum-api/harhar/cmd/harmock@latest out.har
+```
+
+```bash
+go run github.com/callosum-api/harhar/cmd/harreplay@latest -t http://127.0.0.1:6060 out.har
+```
+
 - `harhar` GETs each URL and writes one HAR file. It keeps going after a
   failure, records the failure, and exits 1 at the end.
 - `harprox` forwards `http://127.0.0.1:6060/<path>` to `-p` + `<path>`. It
@@ -174,8 +232,31 @@ go run github.com/callosum-api/harhar/cmd/harprox@latest -p https://api.example.
   records on the server side instead, which gives less timing detail. It
   listens only on loopback unless `-i` says otherwise. It does not follow
   redirects; it passes them back to the client.
+- `harmock` serves HAR files with `mock.Middleware` on `127.0.0.1:6060`,
+  harprox's default address. On startup it prints each route (method, path
+  and canonical query) with its recorded statuses in order, then the
+  settings, then logs one line per request (`-q` turns that off). Its flags
+  are `-ignore-query name`, `-fallback URL` (forward unmatched requests;
+  the default is 404) and `-host recorded=host`.
+- `harreplay` re-sends recorded requests in `StartedDateTime` order, without
+  following redirects. It uses a cookie jar, since recorded cookies are
+  redacted. It prints `ok`, `DIFF`, `FAIL` or `SKIP` per request with
+  indented differences, and exits 1 if anything differed or failed:
+  - `-t URL` sends every request to URL instead of its recorded host.
+    Recorded hosts in the recorded responses are rewritten to URL before
+    comparing, so replaying against `harmock` shows no spurious differences.
+  - Status, `Content-Type` and body are always compared, with JSON compared
+    by value (`body $.items[0].name: "a" -> "b"`). `-headers` adds the other
+    headers minus volatile ones; `-ignore-header` and `-ignore-json key`
+    narrow the comparison.
+  - Headers whose recorded value contains `[REDACTED]` are not sent, and are
+    counted in a note on stderr. Supply real values with `-h file`, in
+    harprox's format. `-o file` records the replayed traffic.
+  - Entries whose request body was truncated are skipped (`SKIP`). A
+    recorded failure that fails again counts as `ok`.
 
-Both accept `-max-body n`. Run either one with `-help` to see every flag.
+`harhar` and `harprox` accept `-max-body n`. Run any of them with `-help` to
+see every flag.
 
 ## Working on this repo
 
@@ -184,7 +265,10 @@ Both accept `-max-body n`. Run either one with `-help` to see every flag.
   [middleware.go](middleware.go) (server side),
   [capture.go](capture.go) (body capture and HAR conversion),
   [redact.go](redact.go), [options.go](options.go),
-  [structs.go](structs.go) (HAR 1.2 types), and `cmd/` (CLIs).
+  [structs.go](structs.go) (HAR 1.2 types), `mock/` (playback; matching in
+  `match.go`), `internal/hostrewrite` (URL host rewriting, shared by `mock`
+  and `harreplay`), `internal/headerfile` (the `-h` file format), and `cmd/`
+  (CLIs).
 - CI runs `go vet ./...` and `go test -race ./...` on Go 1.24 and on stable,
   plus `staticcheck` and `govulncheck`. Run the same before proposing changes.
   Set `GOTOOLCHAIN=local` to test against your installed Go instead of the
