@@ -46,12 +46,41 @@ Options
 ```go
 rec := harhar.NewRecorder(
 	harhar.WithCreator("myapp", "1.2.3"),
-	harhar.WithRedactedHeaders(append(harhar.DefaultRedactedHeaders(), "X-Api-Key")...),
 	harhar.WithMaxBodySize(64<<10), // bytes recorded per body; -1 for no limit
 	harhar.WithMaxEntries(1000),    // keep only the latest entries
 	harhar.WithOnEntry(func(e harhar.Entry) { /* stream it somewhere */ }),
 )
 ```
+
+### Redaction
+
+Header values pass through a redaction function before they're recorded.
+The default, `harhar.DefaultHeaderRedactor`, replaces only the secret
+part of credential headers and keeps the rest for context:
+
+| Header | Sent | Recorded |
+|---|---|---|
+| `Authorization`, `Proxy-Authorization` | `Bearer abc123` | `Bearer [REDACTED]` |
+| `Cookie` | `id=abc; theme=dark` | `id=[REDACTED]; theme=[REDACTED]` |
+| `Set-Cookie` | `id=abc; Path=/; HttpOnly` | `id=[REDACTED]; Path=/; HttpOnly` |
+
+The recorded cookie lists are parsed from the redacted headers, so they
+always match. To change what's redacted, supply your own function and fall
+back to the default:
+
+```go
+harhar.WithHeaderRedactor(func(name, value string) string {
+	switch name {
+	case "X-Api-Key":
+		return harhar.RedactedValue // also redact this header
+	case "Cookie":
+		return value // these cookies aren't sensitive
+	}
+	return harhar.DefaultHeaderRedactor(name, value)
+})
+```
+
+`WithHeaderRedactor(nil)` records every header as is.
 
 Commands
 --------
@@ -79,12 +108,12 @@ command with `-help` for all flags.
 Security
 --------
 
-HAR files contain the traffic as sent and received. By default the values
-of `Authorization`, `Cookie`, `Proxy-Authorization` and `Set-Cookie` headers
-(and the cookies parsed from them) are recorded as `[REDACTED]`, but URLs,
-bodies and all other headers are recorded as is. Treat HAR files like
-credentials. `WriteFile` creates files readable only by the current user.
+HAR files contain the traffic as sent and received. By default the secrets
+in `Authorization`, `Proxy-Authorization`, `Cookie` and `Set-Cookie` headers
+are redacted (see [Redaction](#redaction)), but URLs, bodies and all other
+headers are recorded as is. Treat HAR files like credentials. `WriteFile`
+creates files readable only by the current user.
 
-Each body is recorded up to 1 MiB by default, and every entry is kept in
+Each body is recorded up to 32 MiB by default, and every entry is kept in
 memory until you call `Reset`. For long-running programs, use
 `WithMaxEntries` or `WithOnEntry`.

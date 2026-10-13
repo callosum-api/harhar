@@ -100,14 +100,20 @@ These change what gets recorded. Each can be turned off with an option.
 
 | Change | To get the old behavior |
 |---|---|
-| `Authorization`, `Cookie`, `Proxy-Authorization` and `Set-Cookie` values, and cookie values, are recorded as `[REDACTED]` | `harhar.WithRedactedHeaders()` |
-| Bodies are recorded up to 1 MiB, with a comment noting the truncation | `harhar.WithMaxBodySize(-1)` |
+| Secrets in `Authorization`, `Proxy-Authorization`, `Cookie` and `Set-Cookie` headers are redacted, e.g. `Bearer [REDACTED]` or `id=[REDACTED]; Path=/` | `harhar.WithHeaderRedactor(nil)` |
+| Bodies are recorded up to 32 MiB, with a comment noting the truncation | `harhar.WithMaxBodySize(-1)` |
 | The creator is `harhar` at its module version, not the program name | `harhar.WithCreator(name, version)` |
 
-To redact more headers, extend the defaults:
+To redact more, or less, pass your own function to `WithHeaderRedactor` and
+fall back to `harhar.DefaultHeaderRedactor`:
 
 ```go
-harhar.WithRedactedHeaders(append(harhar.DefaultRedactedHeaders(), "X-Api-Key")...)
+harhar.WithHeaderRedactor(func(name, value string) string {
+	if name == "X-Api-Key" {
+		return harhar.RedactedValue
+	}
+	return harhar.DefaultHeaderRedactor(name, value)
+})
 ```
 
 For long-running programs, `harhar.WithMaxEntries(n)` keeps only the latest

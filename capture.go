@@ -101,12 +101,13 @@ func (b *teeBody) done(err error) {
 
 // makeRequest converts hr to a harhar.Request, without its body.
 func (cfg *config) makeRequest(hr *http.Request) Request {
+	header := cfg.redactHeaders(hr.Header)
 	r := Request{
 		Method:      hr.Method,
 		URL:         requestURL(hr),
 		HTTPVersion: hr.Proto,
-		Cookies:     makeCookies(hr.Cookies(), cfg.redact["Cookie"]),
-		Headers:     cfg.makeHeaders(hr.Header),
+		Cookies:     makeCookies((&http.Request{Header: header}).Cookies()),
+		Headers:     makeHeaders(header),
 		QueryString: parseQuery(hr.URL.RawQuery),
 		HeadersSize: headersSize(hr.Header),
 	}
@@ -225,25 +226,21 @@ func parseQuery(query string) []NameValuePair {
 }
 
 // makeHeaders converts headers to HAR name/value pairs, sorted by name so
-// the output is deterministic, with configured headers redacted.
-func (cfg *config) makeHeaders(h http.Header) []NameValuePair {
+// the output is deterministic.
+func makeHeaders(h http.Header) []NameValuePair {
 	pairs := make([]NameValuePair, 0, len(h))
 	for _, name := range slices.Sorted(maps.Keys(h)) {
-		redact := cfg.redact[http.CanonicalHeaderKey(name)]
 		for _, val := range h[name] {
-			if redact {
-				val = RedactedValue
-			}
 			pairs = append(pairs, NameValuePair{Name: name, Value: val})
 		}
 	}
 	return pairs
 }
 
-func makeCookies(cookies []*http.Cookie, redact bool) []Cookie {
+func makeCookies(cookies []*http.Cookie) []Cookie {
 	out := make([]Cookie, 0, len(cookies))
 	for _, c := range cookies {
-		nc := Cookie{
+		out = append(out, Cookie{
 			Name:     c.Name,
 			Value:    c.Value,
 			Path:     c.Path,
@@ -251,11 +248,7 @@ func makeCookies(cookies []*http.Cookie, redact bool) []Cookie {
 			Expires:  c.Expires,
 			HTTPOnly: c.HttpOnly,
 			Secure:   c.Secure,
-		}
-		if redact {
-			nc.Value = RedactedValue
-		}
-		out = append(out, nc)
+		})
 	}
 	return out
 }
@@ -269,12 +262,13 @@ func headersSize(h http.Header) int64 {
 
 // makeResponse converts hr to a harhar.Response, without its body.
 func (cfg *config) makeResponse(hr *http.Response) Response {
+	header := cfg.redactHeaders(hr.Header)
 	r := Response{
 		Status:      hr.StatusCode,
 		StatusText:  statusText(hr),
 		HTTPVersion: hr.Proto,
-		Cookies:     makeCookies(hr.Cookies(), cfg.redact["Set-Cookie"]),
-		Headers:     cfg.makeHeaders(hr.Header),
+		Cookies:     makeCookies((&http.Response{Header: header}).Cookies()),
+		Headers:     makeHeaders(header),
 		HeadersSize: headersSize(hr.Header),
 	}
 	if rurl, err := hr.Location(); err == nil {

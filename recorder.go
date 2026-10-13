@@ -6,8 +6,9 @@
 // Recorder.Middleware to record the requests an http.Handler serves. Then
 // save the log with Recorder.WriteFile or Recorder.WriteTo.
 //
-// HAR files contain the traffic as sent and received. Headers that usually
-// carry credentials are redacted by default (see DefaultRedactedHeaders),
+// HAR files contain the traffic as sent and received. Credentials in the
+// Authorization, Proxy-Authorization, Cookie and Set-Cookie headers are
+// redacted by default (see DefaultHeaderRedactor and WithHeaderRedactor),
 // but bodies, URLs and other headers are recorded as is, so treat HAR files
 // as sensitive.
 package harhar

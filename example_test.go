@@ -76,11 +76,42 @@ func ExampleRecorder_Transport() {
 func ExampleNewRecorder() {
 	rec := harhar.NewRecorder(
 		harhar.WithCreator("myapp", "1.2.3"),
-		// Also redact a custom credential header.
-		harhar.WithRedactedHeaders(append(harhar.DefaultRedactedHeaders(), "X-Api-Key")...),
 		harhar.WithMaxBodySize(64<<10),
 		// Keep only the latest 1000 entries in memory.
 		harhar.WithMaxEntries(1000),
 	)
 	_ = rec
+}
+
+func ExampleWithHeaderRedactor() {
+	rec := harhar.NewRecorder(harhar.WithHeaderRedactor(func(name, value string) string {
+		switch name {
+		case "X-Api-Key":
+			return harhar.RedactedValue // a custom credential header
+		case "Cookie":
+			return value // this app's cookies aren't sensitive
+		}
+		return harhar.DefaultHeaderRedactor(name, value)
+	}))
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer srv.Close()
+
+	req, _ := http.NewRequest("GET", srv.URL, nil)
+	req.Header.Set("Authorization", "Bearer abc123")
+	req.Header.Set("X-Api-Key", "k-456")
+	req.Header.Set("Cookie", "theme=dark")
+	resp, err := (&http.Client{Transport: rec.Transport(nil)}).Do(req)
+	if err != nil {
+		log.Fatal(err)
+	}
+	resp.Body.Close()
+
+	for _, h := range rec.HAR().Log.Entries[0].Request.Headers {
+		fmt.Printf("%s: %s\n", h.Name, h.Value)
+	}
+	// Output:
+	// Authorization: Bearer [REDACTED]
+	// Cookie: theme=dark
+	// X-Api-Key: [REDACTED]
 }
