@@ -51,7 +51,7 @@ func TestProxy(t *testing.T) {
 	var recorded []harhar.Entry
 	var mu sync.Mutex
 	rec := harhar.NewRecorder(
-		harhar.WithRedactedHeaders("X-Token"),
+		harhar.WithHeaderRedactor(headerRedactor(http.Header{"X-Token": {"secret"}})),
 		harhar.WithOnEntry(func(e harhar.Entry) { mu.Lock(); recorded = append(recorded, e); mu.Unlock() }),
 	)
 	proxy := newProxy(target, http.Header{"X-Token": {"secret"}})
@@ -117,6 +117,20 @@ func TestSecondsOrDuration(t *testing.T) {
 		var d secondsOrDuration
 		if err := d.Set(in); err == nil {
 			t.Errorf("Set(%q) succeeded, want error", in)
+		}
+	}
+}
+
+func TestHeaderRedactor(t *testing.T) {
+	redact := headerRedactor(http.Header{"X-Token": {"secret"}, "Authorization": {"Bearer abc"}})
+	for _, tc := range []struct{ name, in, want string }{
+		{"X-Token", "secret", harhar.RedactedValue},
+		{"Authorization", "Bearer abc", "Bearer " + harhar.RedactedValue}, // keeps the default's partial redaction
+		{"Cookie", "id=1", "id=" + harhar.RedactedValue},
+		{"X-Other", "visible", "visible"},
+	} {
+		if got := redact(tc.name, tc.in); got != tc.want {
+			t.Errorf("redact(%q, %q) = %q, want %q", tc.name, tc.in, got, tc.want)
 		}
 	}
 }

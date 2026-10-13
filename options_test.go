@@ -24,7 +24,7 @@ func newOptionsClient(t *testing.T, h http.HandlerFunc, opts ...Option) (*httpte
 
 func TestDefaultRedaction(t *testing.T) {
 	srv, cli, rec := newOptionsClient(t, func(w http.ResponseWriter, r *http.Request) {
-		http.SetCookie(w, &http.Cookie{Name: "session", Value: "s3cret", Path: "/"})
+		http.SetCookie(w, &http.Cookie{Name: "session", Value: "s3cret", Path: "/", HttpOnly: true})
 		w.Header().Set("X-Other", "visible")
 		// The server still receives the real values.
 		io.WriteString(w, r.Header.Get("Authorization")+" "+r.Header.Get("Cookie"))
@@ -37,46 +37,65 @@ func TestDefaultRedaction(t *testing.T) {
 	}
 
 	ent := onlyEntry(t, rec)
-	if got := headerValues(ent.Request.Headers, "Authorization"); !slices.Equal(got, []string{RedactedValue}) {
-		t.Errorf("Authorization recorded as %q", got)
+	for _, tc := range []struct {
+		pairs      []NameValuePair
+		name, want string
+	}{
+		{ent.Request.Headers, "Authorization", "Bearer " + RedactedValue},
+		{ent.Request.Headers, "Cookie", "id=" + RedactedValue},
+		{ent.Response.Headers, "Set-Cookie", "session=" + RedactedValue + "; Path=/; HttpOnly"},
+		{ent.Response.Headers, "X-Other", "visible"},
+	} {
+		if got := headerValues(tc.pairs, tc.name); !slices.Equal(got, []string{tc.want}) {
+			t.Errorf("%s recorded as %q, want %q", tc.name, got, tc.want)
+		}
 	}
-	if got := headerValues(ent.Request.Headers, "Cookie"); !slices.Equal(got, []string{RedactedValue}) {
-		t.Errorf("Cookie recorded as %q", got)
+	// Cookie names and attributes are kept; only values are redacted.
+	if got, want := ent.Request.Cookies, []Cookie{{Name: "id", Value: RedactedValue}}; !slices.Equal(got, want) {
+		t.Errorf("request cookies = %+v, want %+v", got, want)
 	}
-	if c := ent.Request.Cookies; len(c) != 1 || c[0].Name != "id" || c[0].Value != RedactedValue {
-		t.Errorf("request cookies = %+v", c)
-	}
-	if got := headerValues(ent.Response.Headers, "Set-Cookie"); !slices.Equal(got, []string{RedactedValue}) {
-		t.Errorf("Set-Cookie recorded as %q", got)
-	}
-	if c := ent.Response.Cookies; len(c) != 1 || c[0].Name != "session" || c[0].Value != RedactedValue || c[0].Path != "/" {
-		t.Errorf("response cookies = %+v", c)
-	}
-	if got := headerValues(ent.Response.Headers, "X-Other"); !slices.Equal(got, []string{"visible"}) {
-		t.Errorf("X-Other recorded as %q", got)
+	want := []Cookie{{Name: "session", Value: RedactedValue, Path: "/", HTTPOnly: true}}
+	if got := ent.Response.Cookies; !slices.Equal(got, want) {
+		t.Errorf("response cookies = %+v, want %+v", got, want)
 	}
 }
 
-func TestWithRedactedHeaders(t *testing.T) {
+func TestWithHeaderRedactor(t *testing.T) {
+	// Redact an extra header fully, leave cookies alone, and use the
+	// default for everything else.
+	redactor := func(name, value string) string {
+		switch name {
+		case "X-Api-Key":
+			return RedactedValue
+		case "Cookie":
+			return value
+		}
+		return DefaultHeaderRedactor(name, value)
+	}
 	for _, tc := range []struct {
-		names        []string
-		apiKey, auth string
+		desc                    string
+		fn                      func(string, string) string
+		apiKey, auth, cookieVal string
 	}{
-		{[]string{"x-api-key"}, RedactedValue, "Bearer tok"},
-		{nil, "key", "Bearer tok"},
+		{"custom", redactor, RedactedValue, "Bearer " + RedactedValue, "abc"},
+		{"nil", nil, "key", "Bearer tok", "abc"},
 	} {
-		srv, cli, rec := newOptionsClient(t, echo, WithRedactedHeaders(tc.names...))
+		srv, cli, rec := newOptionsClient(t, echo, WithHeaderRedactor(tc.fn))
 		req, _ := http.NewRequest("GET", srv.URL, nil)
 		req.Header.Set("X-Api-Key", "key")
 		req.Header.Set("Authorization", "Bearer tok")
+		req.AddCookie(&http.Cookie{Name: "id", Value: "abc"})
 		mustDo(t, cli, req)
 
-		headers := onlyEntry(t, rec).Request.Headers
-		if got := headerValues(headers, "X-Api-Key"); !slices.Equal(got, []string{tc.apiKey}) {
-			t.Errorf("WithRedactedHeaders(%q): X-Api-Key = %q", tc.names, got)
+		r := onlyEntry(t, rec).Request
+		if got := headerValues(r.Headers, "X-Api-Key"); !slices.Equal(got, []string{tc.apiKey}) {
+			t.Errorf("%s: X-Api-Key = %q", tc.desc, got)
 		}
-		if got := headerValues(headers, "Authorization"); !slices.Equal(got, []string{tc.auth}) {
-			t.Errorf("WithRedactedHeaders(%q): Authorization = %q", tc.names, got)
+		if got := headerValues(r.Headers, "Authorization"); !slices.Equal(got, []string{tc.auth}) {
+			t.Errorf("%s: Authorization = %q", tc.desc, got)
+		}
+		if len(r.Cookies) != 1 || r.Cookies[0].Value != tc.cookieVal {
+			t.Errorf("%s: cookies = %+v", tc.desc, r.Cookies)
 		}
 	}
 }
@@ -114,22 +133,25 @@ func TestWithMaxBodySizeKeepsUTF8Valid(t *testing.T) {
 }
 
 func TestWithMaxBodySizeZeroAndUnlimited(t *testing.T) {
-	big := strings.Repeat("x", DefaultMaxBodySize+1)
-	handler := func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, big) }
+	if got := NewRecorder().cfg.maxBodySize; got != DefaultMaxBodySize || DefaultMaxBodySize != 32<<20 {
+		t.Errorf("default max body size = %d, want 32 MiB", got)
+	}
+	body := strings.Repeat("x", 1000)
+	handler := func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, body) }
 	for _, tc := range []struct {
-		opts []Option
+		max  int64
 		want int
 	}{
-		{nil, DefaultMaxBodySize},
-		{[]Option{WithMaxBodySize(0)}, 0},
-		{[]Option{WithMaxBodySize(-1)}, len(big)},
+		{999, 999},
+		{0, 0},
+		{-1, len(body)},
 	} {
-		srv, cli, rec := newOptionsClient(t, handler, tc.opts...)
+		srv, cli, rec := newOptionsClient(t, handler, WithMaxBodySize(tc.max))
 		req, _ := http.NewRequest("GET", srv.URL, nil)
 		mustDo(t, cli, req)
 		c := onlyEntry(t, rec).Response.Content
-		if len(c.Text) != tc.want || c.Size != int64(len(big)) {
-			t.Errorf("want %d bytes kept: kept %d, size %d", tc.want, len(c.Text), c.Size)
+		if len(c.Text) != tc.want || c.Size != int64(len(body)) {
+			t.Errorf("WithMaxBodySize(%d): kept %d bytes of %d, want %d", tc.max, len(c.Text), c.Size, tc.want)
 		}
 	}
 }

@@ -16,14 +16,12 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"maps"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"os"
 	"os/signal"
-	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -70,8 +68,7 @@ func main() {
 
 	var entries atomic.Uint64
 	rec := harhar.NewRecorder(
-		// Headers from -h are usually credentials, so keep them out of the log.
-		harhar.WithRedactedHeaders(append(harhar.DefaultRedactedHeaders(), slices.Collect(maps.Keys(overHeaders))...)...),
+		harhar.WithHeaderRedactor(headerRedactor(overHeaders)),
 		harhar.WithMaxBodySize(*maxBody),
 		harhar.WithOnEntry(func(harhar.Entry) { entries.Add(1) }),
 	)
@@ -151,6 +148,20 @@ func newProxy(target *url.URL, headers http.Header) *httputil.ReverseProxy {
 				pr.Out.Header[name] = vals
 			}
 		},
+	}
+}
+
+// headerRedactor applies harhar.DefaultHeaderRedactor, and also fully
+// redacts the headers set with -h, which are usually credentials.
+func headerRedactor(injected http.Header) func(name, value string) string {
+	return func(name, value string) string {
+		if redacted := harhar.DefaultHeaderRedactor(name, value); redacted != value {
+			return redacted
+		}
+		if _, ok := injected[name]; ok {
+			return harhar.RedactedValue
+		}
+		return value
 	}
 }
 

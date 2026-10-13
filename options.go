@@ -1,22 +1,10 @@
 package harhar
 
-import (
-	"net/http"
-	"runtime/debug"
-)
+import "runtime/debug"
 
 // DefaultMaxBodySize is how many bytes of each request and response body
 // are recorded unless WithMaxBodySize is used.
-const DefaultMaxBodySize = 1 << 20
-
-// RedactedValue replaces the values of redacted headers and cookies.
-const RedactedValue = "[REDACTED]"
-
-// DefaultRedactedHeaders returns the headers that are redacted unless
-// WithRedactedHeaders is used.
-func DefaultRedactedHeaders() []string {
-	return []string{"Authorization", "Cookie", "Proxy-Authorization", "Set-Cookie"}
-}
+const DefaultMaxBodySize = 32 << 20
 
 const modulePath = "github.com/callosum-api/harhar"
 
@@ -24,21 +12,20 @@ const modulePath = "github.com/callosum-api/harhar"
 type Option func(*config)
 
 type config struct {
-	creator     Creator
-	redact      map[string]bool // canonical header names
-	maxBodySize int64           // negative for no limit
-	maxEntries  int             // negative for no limit
-	onEntry     func(Entry)
+	creator      Creator
+	redactHeader func(name, value string) string // nil records headers as is
+	maxBodySize  int64                           // negative for no limit
+	maxEntries   int                             // negative for no limit
+	onEntry      func(Entry)
 }
 
 func defaultConfig() config {
-	cfg := config{
-		creator:     Creator{Name: "harhar", Version: moduleVersion()},
-		maxBodySize: DefaultMaxBodySize,
-		maxEntries:  -1,
+	return config{
+		creator:      Creator{Name: "harhar", Version: moduleVersion()},
+		redactHeader: DefaultHeaderRedactor,
+		maxBodySize:  DefaultMaxBodySize,
+		maxEntries:   -1,
 	}
-	WithRedactedHeaders(DefaultRedactedHeaders()...)(&cfg)
-	return cfg
 }
 
 // moduleVersion returns this module's version from the build info.
@@ -62,17 +49,18 @@ func WithCreator(name, version string) Option {
 	return func(c *config) { c.creator = Creator{Name: name, Version: version} }
 }
 
-// WithRedactedHeaders sets which headers have their values replaced with
-// RedactedValue, replacing DefaultRedactedHeaders. Redacting Cookie or
-// Set-Cookie also redacts the values of the cookies parsed from them. Call
-// it with no names to record every header as is.
-func WithRedactedHeaders(names ...string) Option {
-	return func(c *config) {
-		c.redact = make(map[string]bool, len(names))
-		for _, name := range names {
-			c.redact[http.CanonicalHeaderKey(name)] = true
-		}
-	}
+// WithHeaderRedactor sets the function that redacts header values before
+// they are recorded, replacing DefaultHeaderRedactor. It is called with the
+// canonical header name (e.g. "Set-Cookie") for each value of every
+// request and response header, and returns the value to record.
+//
+// The recorded cookie lists are parsed from the redacted Cookie and
+// Set-Cookie headers, so they match whatever the redactor recorded; a
+// cookie the redactor makes unparsable is left out of the list.
+//
+// A nil fn records every header as is. fn may be called concurrently.
+func WithHeaderRedactor(fn func(name, value string) string) Option {
+	return func(c *config) { c.redactHeader = fn }
 }
 
 // WithMaxBodySize limits how many bytes of each request and response body
